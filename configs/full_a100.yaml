@@ -1,0 +1,52 @@
+# Full A100 training profile. Real data, bf16 mixed precision, paper schedule.
+# Same code path as smoke_local.yaml — only these values differ.
+run:
+  profile: full
+  device: cuda
+  precision: bf16
+  seed: 0
+  max_steps: null          # run the full schedule
+  eval_split: val          # test split GT is held out (leaderboard); report val AP50
+
+data:
+  root: ./ln_data
+  subset_size: null        # full dataset (train 8349 / val 1163)
+  query_len: 40
+  imsize: 416
+
+model:
+  emb_size: 512            # AttnGrounder's real default (train_yolo.py argparse); keep identical for both variants
+  variant: bdh             # flip to "baseline" for the reproduction run (Step 5.1)
+  bdh:
+    mode: C                # C (primary). Ablation runs: A, B
+    # n = mult*emb_size. NET params vs baseline 75.84M (after fusion trim, shared across scales):
+    #   mult=1 -> +0.00M (n=d, no expansion, weakest);  mult=2 -> +0.79M;  mult=4 -> +2.36M
+    #   share_qv_encoder:true reclaims n*d (mult=2 -> +0.26M). Backbone dominates, so this is ~1% either way.
+    mult: 2
+    n_head: 1
+    dropout: 0.1
+    share_scales: true
+    share_qv_encoder: false  # set true to tie query/value encoders and trim params further
+  fusion:
+    streams: [fvisu, flang_attn]
+  lambda_map: 0.1
+
+train:
+  batch_size: 14           # paper
+  lr: 1.0e-4               # paper (Adam), main param group
+  backbone_lr_divisor: 10  # Darknet-53 group runs at lr/10 (per train_yolo.py:261; paper's "1e-3" is a typo)
+  weight_decay: 5.0e-4     # per train_yolo.py Adam
+  epochs: 100
+  optimizer: adam
+  scheduler: poly
+  scheduler_power: 1.0
+  anchors: [[10,13],[16,30],[33,23],[30,61],[62,45],[59,119],[116,90],[156,198],[373,326]]
+
+checkpoint:
+  dir: ./checkpoints/full
+  every_n_steps: 500
+  resume: null
+
+log:
+  csv: ./logs/full_loss.csv
+  every_n_steps: 20

@@ -1,0 +1,48 @@
+# Local CPU smoke-test profile (M1 Mac, no CUDA). Tiny data, few steps.
+# Same code path as full_a100.yaml — only these values differ.
+run:
+  profile: smoke
+  device: cpu
+  precision: fp32          # bf16 only on A100
+  seed: 0
+  max_steps: 20            # hard cap for a quick end-to-end check
+  eval_split: val          # test split has no public GT
+
+data:
+  root: ./ln_data          # AttnGrounder preprocessed .pth live here (remote)
+  subset_size: 32          # use only N samples locally
+  query_len: 40
+  imsize: 416
+
+model:
+  emb_size: 256
+  variant: bdh             # "bdh" | "baseline"
+  bdh:
+    mode: C                # C (primary) | A | B (ablations)
+    mult: 4                # n = mult * emb_size
+    n_head: 1
+    dropout: 0.1
+    share_scales: true     # one BDH module reused across the 3 FPN scales
+  fusion:
+    streams: [fvisu, flang_attn]   # trimmed 2-stream fusion (drop beta*fvisu)
+  lambda_map: 0.1          # aux BCE mask loss weight (paper eq.5)
+
+train:
+  batch_size: 2
+  lr: 1.0e-4
+  backbone_lr_divisor: 10  # Darknet-53 group at lr/10 (matches train_yolo.py)
+  weight_decay: 5.0e-4
+  epochs: 1
+  optimizer: adam
+  scheduler: poly          # polynomial, power 1 (paper)
+  scheduler_power: 1.0
+  anchors: [[10,13],[16,30],[33,23],[30,61],[62,45],[59,119],[116,90],[156,198],[373,326]]
+
+checkpoint:
+  dir: ./checkpoints/smoke
+  every_n_steps: 10
+  resume: null
+
+log:
+  csv: ./logs/smoke_loss.csv
+  every_n_steps: 1
