@@ -285,7 +285,27 @@ CUDA_VISIBLE_DEVICES=0 python analysis/stratified_eval.py \
     --resume checkpoints/full/bdh_B_best.pth.tar \
     --scene-index analysis/scene_index_val.json
 ```
-**NOT YET RUN.**
+**Mode A — DONE (2026-07-19): best AP50 = 65.15** (set at epoch 60, held
+through epoch 99 — epoch 98 dipped to 63.86, epoch 99 to 64.54, checkpointer
+correctly kept the epoch-60 weights). Stratified eval on
+`bdh_A_best.pth.tar`:
+```
+              AP50 (all)   AP50 (ambiguous, n=830)   AP50 (unambiguous, n=333)
+baseline        64.92             63.37                      68.77
+bdh mode C      64.06             62.17                      68.77
+bdh mode A      65.09             63.98                      67.87
+Δ A - baseline  +0.17             +0.61                      -0.90
+```
+**This is the first result pointing in the hypothesis's predicted
+direction**: mode A beats baseline specifically on ambiguous scenes
+(+0.61), while ceding ground on unambiguous scenes (-0.90) — a genuine
+trade-off toward disambiguation, not the uniform shift mode C showed. The
+modest aggregate gain (+0.17) undersells it; the split is the interesting
+part. Still one run/one seed — not conclusive, but a much more encouraging
+data point than mode C.
+
+**Mode B — IN PROGRESS**, launched 2026-07-19 in tmux session `bdh_B`, same
+command pattern as A. NOT YET DONE.
 
 ## LATER (after A/B land): improvements beyond the attention swap
 User wants to explore this next, scope not yet defined. Candidate
