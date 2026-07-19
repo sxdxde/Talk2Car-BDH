@@ -229,7 +229,7 @@ def train_epoch(loader, model, optimizer, epoch, args, anchors_full, device, log
             logger.log(phase="train", epoch=epoch, step=global_step,
                        loss=f"{losses.avg:.6f}", accu=f"{accm.avg:.6f}", ap50="")
         if args.ckpt_every and global_step % args.ckpt_every == 0:
-            P.save_checkpoint(args.ckpt_dir, args.variant, epoch, global_step, model, optimizer, -1)
+            P.save_checkpoint(args.ckpt_dir, args.ckpt_tag, epoch, global_step, model, optimizer, -1)
         if args.max_steps and global_step >= args.max_steps:
             break
     return global_step
@@ -278,6 +278,8 @@ def main():
     ap.add_argument("--resume", default=None)
     ap.add_argument("--variant", default=None, choices=["bdh", "baseline"],
                     help="override model.variant from the config")
+    ap.add_argument("--bdh-mode", default=None, choices=["A", "B", "C"],
+                    help="override model.bdh.mode from the config (bdh variant only)")
     cli = ap.parse_args()
 
     cfg = P.load_config(cli.config)
@@ -286,6 +288,11 @@ def main():
         args.resume = cli.resume
     if cli.variant:
         args.variant = cli.variant
+    if cli.bdh_mode:
+        args.bdh_mode = cli.bdh_mode
+    # checkpoint tag must encode bdh_mode too, otherwise mode A/B/C runs
+    # overwrite each other's checkpoints under the same "bdh" tag
+    args.ckpt_tag = args.variant if args.variant != "bdh" else f"bdh_{args.bdh_mode}"
     device = P.resolve_device(args.device)
 
     random.seed(args.seed); np.random.seed(args.seed + 1); torch.manual_seed(args.seed + 2)
@@ -306,7 +313,8 @@ def main():
 
     model = build_model(args, corpus).to(device)
     n_params = sum(p.numel() for p in model.parameters())
-    print(f"[model] variant={args.variant} emb_size={args.emb_size} params={n_params/1e6:.2f}M")
+    print(f"[model] variant={args.variant} bdh_mode={args.bdh_mode} ckpt_tag={args.ckpt_tag} "
+          f"emb_size={args.emb_size} params={n_params/1e6:.2f}M")
 
     optimizer = make_optimizer(model, args)
     start_epoch, global_step, best = 0, 0, -float("inf")
@@ -330,7 +338,7 @@ def main():
         best = max(best, ap50)
         print(f"[val] epoch {epoch} AP50={ap50*100:.2f} (best {best*100:.2f})")
         logger.log(phase="val", epoch=epoch, step=global_step, loss="", accu="", ap50=f"{ap50:.6f}")
-        P.save_checkpoint(args.ckpt_dir, args.variant, epoch + 1, global_step, model, optimizer, best, is_best)
+        P.save_checkpoint(args.ckpt_dir, args.ckpt_tag, epoch + 1, global_step, model, optimizer, best, is_best)
         if args.max_steps and global_step >= args.max_steps:
             print("[smoke] reached max_steps; stopping"); break
     logger.close()

@@ -1,0 +1,351 @@
+\documentclass[aspectratio=169]{beamer}
+
+\usetheme{Madrid}
+\usecolortheme{whale}
+\usepackage[utf8]{inputenc}
+\usepackage{booktabs}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta, positioning, fit, backgrounds}
+
+\setbeamertemplate{navigation symbols}{}
+\setbeamertemplate{footline}[frame number]
+\setbeamercolor{block title}{bg=blue!20,fg=black}
+\setbeamercolor{block body}{bg=blue!5,fg=black}
+\setbeamercolor{alertblock title}{bg=red!20,fg=black}
+\setbeamercolor{alertblock body}{bg=red!5,fg=black}
+
+\title[BDH-Swapped AttnGrounder]{Swapping AttnGrounder's Attention for a\\ Brain-Inspired Associative Memory (BDH)}
+\subtitle{Testing the ``Grounding = In-Context Retrieval'' Hypothesis on Talk2Car}
+\author{Sudarshan Sudhakar}
+\date{\today}
+
+\begin{document}
+
+% ------------------------------------------------------------------
+\begin{frame}
+  \titlepage
+\end{frame}
+
+% ------------------------------------------------------------------
+\begin{frame}{Outline}
+  \tableofcontents
+\end{frame}
+
+\section{Motivation \& Hypothesis}
+
+% ------------------------------------------------------------------
+\begin{frame}{The Task: Visual Grounding}
+  \begin{columns}[T]
+    \begin{column}{0.55\textwidth}
+      \textbf{Visual grounding} (Talk2Car): given an image and a
+      natural-language command, localize the single object the
+      command refers to.
+      \vspace{0.4cm}
+
+      \textit{``Turn left behind the silver car''} $\rightarrow$
+      one bounding box.
+
+      \vspace{0.4cm}
+      The hard cases are scenes with \textbf{multiple objects of the
+      same class} — the model must disambiguate using language, not
+      just detect.
+    \end{column}
+    \begin{column}{0.45\textwidth}
+      \begin{block}{Baseline model}
+        \textbf{AttnGrounder} (Mittal, IIT Mandi) — single-stage,
+        Darknet-53 + BiLSTM/GloVe, a lightweight \emph{visual--text
+        attention} module fuses the two modalities before a YOLO head.
+      \end{block}
+    \end{column}
+  \end{columns}
+\end{frame}
+
+% ------------------------------------------------------------------
+\begin{frame}{Why Bring in BDH?}
+  \begin{block}{Dragon Hatchling (BDH) — Kosowski et al., Pathway 2025}
+    A brain-inspired sequence architecture whose working memory is an
+    \textbf{explicit, growing outer-product associative memory}
+    ($\rho = K^\top V$), updated with Hebbian-style read/write —
+    rather than a fixed-size compressed state (e.g.\ Mamba/SSMs).
+  \end{block}
+  \vspace{0.3cm}
+  \begin{alertblock}{The hypothesis we're testing}
+    \emph{``Grounding = in-context retrieval''}: architectures with
+    explicit associative memory should have an edge precisely when a
+    query must be matched against \textbf{multiple similar
+    candidates} in context — because that is a retrieval problem, not
+    a compression problem.
+  \end{alertblock}
+  \textbf{Prediction:} swapping AttnGrounder's attention for a BDH
+  module should raise AP50 \emph{disproportionately} on scenes with
+  several same-class candidate objects (``ambiguous'' scenes),
+  relative to scenes with only one.
+\end{frame}
+
+\section{Method}
+
+% ------------------------------------------------------------------
+\begin{frame}{Architecture: A Drop-In Swap}
+  \begin{center}
+  \begin{tikzpicture}[
+      node distance=6mm and 8mm,
+      box/.style={draw, rounded corners, minimum height=0.9cm, minimum width=2.1cm, align=center, font=\scriptsize},
+      swap/.style={draw, rounded corners, minimum height=0.9cm, minimum width=2.6cm, align=center, font=\scriptsize, fill=orange!25, thick},
+      arrow/.style={-{Stealth[length=2mm]}, thick}
+  ]
+    \node[box] (img) {Image};
+    \node[box, below=of img] (txt) {Command};
+
+    \node[box, right=of img] (visu) {Darknet-53\\FPN (3 scales)};
+    \node[box, right=of txt] (lang) {BiLSTM\\+ GloVe};
+
+    \node[swap, right=14mm of visu, yshift=-0.55cm] (attn) {Visual--Text\\Attention\\\textbf{[SWAPPED]}};
+
+    \node[box, right=of attn] (fuse) {2-Stream\\Fusion};
+    \node[box, right=of fuse] (yolo) {YOLO Head};
+
+    \draw[arrow] (img) -- (visu);
+    \draw[arrow] (txt) -- (lang);
+    \draw[arrow] (visu.east) -- (attn.west);
+    \draw[arrow] (lang.east) -- ++(0.7,0) |- (attn.west);
+    \draw[arrow] (attn) -- (fuse);
+    \draw[arrow] (visu.north) -- ++(0,0.5) -| (fuse.north);
+    \draw[arrow] (fuse) -- (yolo);
+  \end{tikzpicture}
+  \end{center}
+  \vspace{0.2cm}
+  \begin{columns}[T]
+    \begin{column}{0.48\textwidth}
+      \small\textbf{Baseline attention:} softmax cross-attention
+      (region queries $\times$ word keys), scalar gate $\beta$.
+    \end{column}
+    \begin{column}{0.48\textwidth}
+      \small\textbf{BDH module (Mode C):} symmetric, non-causal
+      kernel; ReLU-sparse addressing; explicit outer-product memory
+      $\rho = K^\top V$; multiplicative bilinear gate. Same output
+      shapes $\Rightarrow$ true drop-in.
+    \end{column}
+  \end{columns}
+\end{frame}
+
+% ------------------------------------------------------------------
+\begin{frame}{Keeping the Comparison Fair}
+  \begin{itemize}
+    \item \textbf{Single component swap}: backbone, text encoder, YOLO
+      head, losses, hyperparameters — all byte-for-byte identical
+      between variants.
+    \item \textbf{Fusion trim}: BDH fuses only $[f_{visu}, f_{lang\_attn}]$
+      (2 streams) instead of the original 3, to offset most of the
+      module's added parameters.
+    \item \textbf{Same training recipe for both}: A100-40GB, bf16,
+      100 epochs, Adam (lr $10^{-4}$, backbone lr$/10$), batch 14,
+      poly LR schedule.
+  \end{itemize}
+  \vspace{0.3cm}
+  \begin{table}
+    \centering\small
+    \begin{tabular}{lccc}
+      \toprule
+      Variant & Params & vs.\ baseline \\
+      \midrule
+      Baseline (AttnGrounder, unmodified) & 75.84M & --- \\
+      BDH (Mode C, single-head) & 76.63M & $+0.79$M ($+1.0\%$) \\
+      \bottomrule
+    \end{tabular}
+  \end{table}
+  \small Backbone dominates parameter count either way — this is a
+  fusion-mechanism comparison, not a capacity comparison.
+\end{frame}
+
+\section{Measuring ``Ambiguity''}
+
+% ------------------------------------------------------------------
+\begin{frame}{Step 6: Stratifying the Val Set}
+  Talk2Car's own annotations only record the \emph{referred} object —
+  not what else is in the scene. To test the hypothesis we need to
+  know, per image, how many \textbf{other} objects share the referred
+  object's class.
+
+  \begin{block}{Data pipeline built for this}
+    Join Talk2Car commands $\to$ nuScenes \texttt{v1.0-trainval}
+    metadata (front-camera 3D annotations) via the sample token $\to$
+    count same-class objects visible in \texttt{CAM\_FRONT}.
+  \end{block}
+
+  \begin{table}
+    \centering\small
+    \begin{tabular}{lcc}
+      \toprule
+      Bucket & Definition & Count (val, $n{=}1163$) \\
+      \midrule
+      Ambiguous & $\geq 1$ other object, same class & 830 \\
+      Unambiguous & referred object is unique in class & 333 \\
+      \bottomrule
+    \end{tabular}
+  \end{table}
+\end{frame}
+
+\section{Results}
+
+% ------------------------------------------------------------------
+\begin{frame}{Results: Aggregate \& Stratified AP50}
+  \begin{table}
+    \centering
+    \begin{tabular}{lccc}
+      \toprule
+      & AP50 (all) & AP50 (ambiguous) & AP50 (unambiguous) \\
+      & $n{=}1163$ & $n{=}830$ & $n{=}333$ \\
+      \midrule
+      Baseline      & 64.92 & 63.37 & 68.77 \\
+      BDH (Mode C)  & 64.06 & 62.17 & 68.77 \\
+      \midrule
+      $\Delta$ (BDH $-$ baseline) & $-0.86$ & $\mathbf{-1.20}$ & $0.00$ \\
+      \bottomrule
+    \end{tabular}
+  \end{table}
+  \vspace{-0.1cm}
+  \begin{center}
+  \scalebox{0.72}{
+  \begin{tikzpicture}[scale=1, every node/.style={font=\scriptsize}]
+    \def\scaleY{0.045}
+    % axis
+    \draw[->] (-0.5,0) -- (7,0);
+    \draw[->] (-0.5,0) -- (-0.5,4.2);
+    % gridline reference at AP50=70
+    \draw[dashed, gray!50] (-0.5,{70*\scaleY}) -- (7,{70*\scaleY});
+    \node[left] at (-0.5,{70*\scaleY}) {70};
+    \draw[dashed, gray!50] (-0.5,{50*\scaleY}) -- (7,{50*\scaleY});
+    \node[left] at (-0.5,{50*\scaleY}) {50};
+
+    % All
+    \draw[fill=blue!60] (0,0) rectangle (0.6,{64.92*\scaleY});
+    \draw[fill=orange!70] (0.7,0) rectangle (1.3,{64.06*\scaleY});
+    \node at (0.65,-0.3) {All};
+
+    % Ambiguous
+    \draw[fill=blue!60] (2.3,0) rectangle (2.9,{63.37*\scaleY});
+    \draw[fill=orange!70] (3.0,0) rectangle (3.6,{62.17*\scaleY});
+    \node at (2.95,-0.3) {Ambiguous};
+
+    % Unambiguous
+    \draw[fill=blue!60] (4.6,0) rectangle (5.2,{68.77*\scaleY});
+    \draw[fill=orange!70] (5.3,0) rectangle (5.9,{68.77*\scaleY});
+    \node at (5.25,-0.3) {Unambiguous};
+
+    % legend
+    \draw[fill=blue!60] (7.3,3.4) rectangle (7.7,3.7);
+    \node[right] at (7.7,3.55) {Baseline};
+    \draw[fill=orange!70] (7.3,2.8) rectangle (7.7,3.1);
+    \node[right] at (7.7,2.95) {BDH};
+  \end{tikzpicture}
+  }
+  \end{center}
+\end{frame}
+
+% ------------------------------------------------------------------
+\begin{frame}{Interpretation}
+  \begin{itemize}
+    \item Both variants tie \textbf{exactly} on unambiguous scenes
+      (229/333 correct, either model) — the entire aggregate gap sits
+      in the ambiguous bucket.
+    \item But the gap runs \textbf{opposite} to the hypothesis: BDH
+      loses \emph{more} ground precisely where its associative memory
+      was predicted to help.
+  \end{itemize}
+  \vspace{0.3cm}
+  \begin{alertblock}{Current read}
+    Under this configuration (Mode~C, single-head, one training run
+    per variant), the ``grounding = in-context retrieval'' prediction
+    is \textbf{not supported}.
+  \end{alertblock}
+  \vspace{0.2cm}
+  \begin{block}{Caveats — not a final verdict yet}
+    \begin{itemize}
+      \item Single seed per variant — a $\sim$1 AP50 gap on 830
+        images carries meaningful noise.
+      \item Only one of three implemented BDH kernel formulations
+        has been trained end-to-end so far.
+    \end{itemize}
+  \end{block}
+\end{frame}
+
+\section{Future Scope}
+
+% ------------------------------------------------------------------
+\begin{frame}{Next: Ablation Study}
+  \small Two alternative BDH formulations are already implemented in
+  code, but not yet trained end-to-end — this is the immediate next
+  step.
+
+  \begin{table}
+    \centering\footnotesize
+    \setlength{\tabcolsep}{4pt}
+    \renewcommand{\arraystretch}{0.95}
+    \begin{tabular}{lp{8cm}}
+      \toprule
+      Mode & Description \\
+      \midrule
+      \textbf{C} (done) & Symmetric, non-causal — regions as queries,
+        words as keys/values. \\
+      \textbf{A} (planned) & Causal-context ablation — restricts what
+        the associative memory can attend to. \\
+      \textbf{B} (planned) & Single-causal-sequence ablation — words
+        and regions share one causal stream. \\
+      \bottomrule
+    \end{tabular}
+  \end{table}
+
+  \vspace{-0.15cm}
+  \begin{block}{\small Why this ordering}
+    \small A null result that survives \textbf{three} kernel variants
+    is far more defensible than one run of one variant — and both
+    ablations reuse the exact same training/eval pipeline already
+    built and validated.
+  \end{block}
+
+  \small\textbf{After that:} if any variant shows a real
+  ambiguous-scene advantage, re-run with a second seed to confirm the
+  effect is stable before drawing conclusions.
+\end{frame}
+
+% ------------------------------------------------------------------
+\begin{frame}{Why Keep Pursuing This}
+  \begin{enumerate}
+    \item \textbf{The infrastructure cost is already paid.} Data
+      pipeline, drop-in BDH module, training loop, and the
+      ambiguous/unambiguous stratified evaluator are all built and
+      validated end-to-end. Remaining work is cheap experiment
+      iteration (A100 time), not engineering.
+    \item \textbf{Low marginal model cost.} BDH adds $\sim$1\%
+      parameters — this stays a clean, fair test of the
+      \emph{mechanism}, not a bigger-model comparison.
+    \item \textbf{A well-tested negative result is still a
+      contribution.} It would say explicit Hebbian associative memory
+      does not trivially transfer from language modeling (where BDH
+      was proposed) to grounded multimodal disambiguation — a useful,
+      non-obvious data point for whether these architectures
+      generalize.
+    \item \textbf{Directly tests a live hypothesis} from recent
+      literature (BDH / Dragon Hatchling; the in-context-retrieval
+      framing) in a task setting the original work did not evaluate.
+  \end{enumerate}
+\end{frame}
+
+% ------------------------------------------------------------------
+\begin{frame}{Summary}
+  \begin{itemize}
+    \item Built a validated, drop-in BDH swap for AttnGrounder and a
+      from-scratch reproduction of the baseline (64.89 AP50 vs.\ paper's
+      63.30\%).
+    \item Built a nuScenes-based pipeline to stratify Talk2Car val by
+      scene ambiguity (830 ambiguous / 333 unambiguous).
+    \item First result (Mode C): hypothesis \textbf{not} supported —
+      BDH trails baseline specifically on ambiguous scenes.
+    \item Next: train Modes A/B on the same pipeline to see whether
+      this is specific to Mode C's kernel or a broader finding.
+  \end{itemize}
+  \vspace{0.6cm}
+  \centering\Large Thank you --- questions welcome.
+\end{frame}
+
+\end{document}

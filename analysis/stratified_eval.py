@@ -52,7 +52,7 @@ def stratify(hits_by_img, scene_index):
     return {k: (ap50(v), len(v)) for k, v in buckets.items()}
 
 
-def run(config, resume, scene_index_path, variant=None):
+def run(config, resume, scene_index_path, variant=None, bdh_mode=None):
     import torch
     from torch.utils.data import DataLoader
     from torchvision.transforms import Compose, ToTensor, Normalize
@@ -66,6 +66,8 @@ def run(config, resume, scene_index_path, variant=None):
     args = P.config_to_args(cfg)
     if variant:
         args.variant = variant
+    if bdh_mode:
+        args.bdh_mode = bdh_mode
     device = P.resolve_device(args.device)
     anchors_full = P.anchors_full_from_list(args.anchors)
     scene_index = json.load(open(scene_index_path))
@@ -115,5 +117,7 @@ if __name__ == "__main__":
     ap.add_argument("--scene-index", required=True)
     ap.add_argument("--variant", default=None, choices=["bdh", "baseline"],
                     help="override model.variant from the config (must match --resume checkpoint)")
+    ap.add_argument("--bdh-mode", default=None, choices=["A", "B", "C"],
+                    help="override model.bdh.mode from the config (must match --resume checkpoint)")
     a = ap.parse_args()
-    run(a.config, a.resume, a.scene_index, a.variant)
+    run(a.config, a.resume, a.scene_index, a.variant, a.bdh_mode)

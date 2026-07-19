@@ -228,11 +228,81 @@ mode C / mult=2 / single-head / single seed.
 
 Caveats before over-interpreting: single training run per variant (no seed
 averaging), ~1 AP50 gap on 830 examples has non-trivial noise given the
-scale. Worth deciding: (a) write this up as a negative result as-is, (b) try
-ablation modes A/B (already implemented, unvalidated) or different
-mult/n_head/share_qv_encoder settings before concluding, or (c) rerun with a
-second seed to check the gap is stable. NOT YET DECIDED — awaiting user
-direction.
+scale.
+
+**DECIDED (2026-07-19): proceed with modes A and B**, then look at
+improvements beyond the attention swap. Not yet decided: seed-averaging /
+multi-seed reruns — revisit after A/B land.
+
+## Slides
+`slides/progress_update.tex` (+ compiled `progress_update.pdf`, 12 slides,
+Beamer/Madrid theme) — progress update for advisor covering hypothesis,
+architecture, method, Step 6 stratification methodology, the mode-C result
+table + bar chart, honest interpretation, and the A/B ablation plan. Built
+2026-07-19, compiles clean (`pdflatex`, 2 passes, no errors/overfull boxes).
+Regenerate after A/B results land — the results slide and interpretation
+slide will need updating to a 3-mode table.
+
+## IN PROGRESS (2026-07-19): ablation modes A and B
+**Checkpoint-tag bug found + fixed before launching**: `train.py` tagged
+checkpoints by `args.variant` alone (`"bdh"`), so training mode A would have
+silently overwritten mode C's `bdh_best.pth.tar`/`bdh_last.pth.tar`. Fixed:
+added `--bdh-mode {A,B,C}` CLI override (mirrors the existing `--variant`
+override) to both `train.py` and `analysis/stratified_eval.py`, and
+introduced `args.ckpt_tag` (`f"bdh_{bdh_mode}"` for the bdh variant,
+otherwise just `args.variant`) used at both `save_checkpoint` call sites.
+Going forward checkpoints are `bdh_A_*`, `bdh_B_*`, `bdh_C_*`,
+`baseline_*` — no more collisions. Synced to remote.
+
+**Manual step required before mode A's first checkpoint**: rename the
+existing mode-C checkpoint on remote to the new naming scheme so it isn't
+orphaned/confusing:
+```bash
+cd ~/BDH/Talk2Car/AttnGrounder/checkpoints/full
+mv bdh_best.pth.tar bdh_C_best.pth.tar
+mv bdh_last.pth.tar bdh_C_last.pth.tar
+```
+
+**Launch commands** (sequential — same A100, don't run A and B in parallel):
+```bash
+cd ~/BDH/Talk2Car/AttnGrounder
+tmux new -s bdh_A
+CUDA_VISIBLE_DEVICES=0 python train.py --config configs/full_a100.yaml --variant bdh --bdh-mode A
+# after it finishes:
+tmux new -s bdh_B
+CUDA_VISIBLE_DEVICES=0 python train.py --config configs/full_a100.yaml --variant bdh --bdh-mode B
+```
+
+After both finish, eval each against the Step 6 scene index:
+```bash
+CUDA_VISIBLE_DEVICES=0 python analysis/stratified_eval.py \
+    --config configs/full_a100.yaml --variant bdh --bdh-mode A \
+    --resume checkpoints/full/bdh_A_best.pth.tar \
+    --scene-index analysis/scene_index_val.json
+
+CUDA_VISIBLE_DEVICES=0 python analysis/stratified_eval.py \
+    --config configs/full_a100.yaml --variant bdh --bdh-mode B \
+    --resume checkpoints/full/bdh_B_best.pth.tar \
+    --scene-index analysis/scene_index_val.json
+```
+**NOT YET RUN.**
+
+## LATER (after A/B land): improvements beyond the attention swap
+User wants to explore this next, scope not yet defined. Candidate
+directions to evaluate/discuss when we get there (brainstormed, not
+committed):
+- Multi-head BDH (currently locked to single-head for the first pass, see
+  design decisions above) — revisit now that a single-head baseline result
+  exists to compare against.
+- `share_qv_encoder: true` (already a config knob, default false, saves
+  ~0.53M params) — cheap to try, currently unused.
+- Different `mult` values (memory width n=mult*emb_size) — mult=1 (param-
+  neutral, weakest) vs mult=4 (+2.36M, strongest) vs current mult=2.
+  Currently no sweep has been run at all, only mult=2.
+- Possibly reconsidering the fusion trim (2-stream vs 3-stream) as an
+  independent variable from the attention-mechanism swap itself, to
+  separate "does BDH help" from "does dropping the beta*visual stream
+  help/hurt".
 
 ## Useful commands reference
 ```bash
