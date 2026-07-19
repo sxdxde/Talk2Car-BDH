@@ -1,8 +1,7 @@
 # Project status — BDH-swapped AttnGrounder on Talk2Car
 
-Last updated: 2026-07-18, right before a local Mac restart (terminal hit
-`fork failed: resource temporarily unavailable` — system resource exhaustion,
-unrelated to the project; a restart should clear it). **Read this file first in
+Last updated: 2026-07-18 — baseline eval-only pipeline confirmed working
+end-to-end on remote (see "BLOCKER RESOLVED" below). **Read this file first in
 the next session to resume with full context.**
 
 ## Goal (one line)
@@ -128,69 +127,43 @@ edit before syncing.
   object** — no all-objects-in-scene list, hence the nuScenes-metadata plan for
   Step 6. Multiple commands can share a `sample_token` (same image, several commands).
 
-## CURRENT BLOCKER (fix written, NOT YET CONFIRMED on remote)
-Ran the first real pipeline test — baseline eval using the **author checkpoint**
-(sanity anchor, not a substitute for training our own baseline — see Roadmap):
-```bash
-CUDA_VISIBLE_DEVICES=0 python train.py --config configs/full_a100.yaml --eval-only --variant baseline \
-    --resume ln_data/version_n2.0_continued_model_best_continued.pth.tar
+## BLOCKER RESOLVED (2026-07-18)
+The bf16 `.numpy()` fix (`decode_pred_boxes()` now `.float()`s `pred_anchor`
+before any numpy conversion) worked. Confirmed on remote:
 ```
-Got most of the way through — model built correctly (**75.84M params**, exactly
-matching the paper), checkpoint loaded (their own tracked best AP50 =
-**65.75%**, i.e. `epoch=39, best=0.6575` — close to the paper's 63.30%, great
-sanity signal) — then crashed in `validate()`:
+[eval] AP50=65.32  inference=3.2ms  params=75.84M
 ```
-TypeError: Got unsupported ScalarType BFloat16
-  at decode_pred_boxes(): conf_s = pred_conf_list[best_scale].view(...).data.cpu().numpy()
-```
-**Root cause**: forward pass runs under bf16 autocast, but `decode_pred_boxes`
-called `.numpy()` directly on bf16 tensors (NumPy has no bfloat16 type).
-
-**Fix applied** (in local `train.py`, `decode_pred_boxes()`, line ~150):
-```python
-def decode_pred_boxes(pred_anchor, anchors_full, args, device):
-    pred_anchor = [p.float() for p in pred_anchor]   # <-- added: local rebind only,
-    ...                                                #     doesn't affect bf16 loss/backward elsewhere
-```
-Verified by careful code review (my local Bash tool was down this session, same
-fork-exhaustion issue as the user's terminal — could not execute a live test,
-but traced every `.numpy()` call site in `train.py` and confirmed this is the
-only one touching bf16-derived tensors; `yolo_loss`/`build_target` never call
-`.numpy()` on model outputs, and `bbox_iou`/`accm` downstream operate on
-already-float32 `pred_box`).
-
-## IMMEDIATE NEXT STEPS (after restart)
-1. Confirm Mac is healthy: open a fresh terminal, `echo ok` should work normally.
-2. Sync the fixed `train.py`:
-   ```bash
-   cd "~/Desktop/Talk2Car BDH"
-   rsync -avz train.py cs24d0010@172.16.1.199:~/BDH/Talk2Car/AttnGrounder/
-   ```
-3. On remote (reattach `tmux attach -t attngroun` or start fresh):
-   ```bash
-   cd ~/BDH/Talk2Car/AttnGrounder
-   CUDA_VISIBLE_DEVICES=0 python train.py --config configs/full_a100.yaml --eval-only --variant baseline \
-       --resume ln_data/version_n2.0_continued_model_best_continued.pth.tar
-   ```
-4. Report back the `[eval] AP50=... inference=...ms params=...M` line (or any
-   new traceback). Expect ~1-3 min total runtime (eval-only, forward-pass only).
-5. If it errors again: paste the traceback, will fix and re-sync.
-6. If it succeeds: this validates the ENTIRE remote pipeline end-to-end
-   (corpus, Darknet weights, loader, model, our eval path, checkpoint loading).
-   Then proceed to the roadmap below.
+75.84M params matches the paper exactly; AP50=65.32 is close to the
+checkpoint's own tracked best (65.75%, epoch=39). **This validates the entire
+remote pipeline end-to-end**: corpus (spaCy-fixed), Darknet weights, data
+loader, model build, our eval path, checkpoint loading. `train.py` on remote
+is confirmed in sync with local (fix present, no redo needed).
 
 ## Roadmap after the blocker clears
-- **Step 2 (real)**: Apply `bdh_grounding/INTEGRATION.md`'s 3 edits (+ the
-  `generate_coord` `.cuda()`→`device` fix) to `model/grounding_model.py` on
-  remote, so `variant=bdh` becomes runnable. (Can write an auto-patch script
-  instead of hand-editing if preferred — offered earlier, not yet built.)
-- **Step 5.1 — actual baseline reproduction**: train AttnGrounder from scratch
-  (`variant: baseline` in `full_a100.yaml`) on our data/environment — the
-  author-checkpoint eval above is a sanity anchor, NOT a substitute for this.
-  Use tmux (`tmux new -s baseline_train`), expect on the order of 1-3
-  hours/run on the A100 (rough estimate, not measured — extrapolate from a few
-  real epochs once running).
-- **Step 5.2 — BDH variant training**: same recipe, `variant: bdh`, `mode: C`.
+- **Step 2 (real)** — DONE (2026-07-18): applied `bdh_grounding/INTEGRATION.md`'s
+  3 edits + the `generate_coord` `.cuda()`→`device` fix to local
+  `external/AttnGrounder/model/grounding_model.py` (reference copy, edited
+  locally per the local→remote sync model), verified `py_compile` clean and
+  kwargs match `train.py build_model()` exactly, synced to remote
+  `~/BDH/Talk2Car/AttnGrounder/model/grounding_model.py`. `variant=bdh` is now
+  runnable on remote.
+- **Step 5.1 — actual baseline reproduction** — DONE (2026-07-19): trained
+  AttnGrounder from scratch (`--variant baseline`, `full_a100.yaml`, 100
+  epochs) on remote A100. **Best AP50 = 64.89** (epoch 98; epoch 99 dipped to
+  63.77, checkpointer correctly kept the epoch-98 weights). Compares well to
+  paper's 63.30% and the author checkpoint's 65.75% — solid reproduction,
+  validates the training loop end-to-end (not just eval-only).
+- **Step 5.2 — BDH variant training** (NEXT): same recipe, `--variant bdh`,
+  `mode: C` (config default already `variant: bdh`, `mode: C`, `mult: 2`).
+  ```bash
+  cd ~/BDH/Talk2Car/AttnGrounder
+  tmux new -s bdh_train   # or reuse attngroun/a fresh window
+  CUDA_VISIBLE_DEVICES=0 python train.py --config configs/full_a100.yaml --variant bdh
+  ```
+  Expect ~similar wall-clock to the baseline run just completed (same epoch
+  count/batch size; BDH module adds ~1% params, shouldn't meaningfully change
+  step time). Detach with `Ctrl+b d`, reattach anytime to check progress —
+  no need to babysit it.
 - **Step 6 data prep**: get a free nuscenes.org account, download
   `v1.0-trainval_meta.tgz` (~445MB metadata only), `pip install nuscenes-devkit`,
   run `analysis/build_scene_index.py` against `val_commands.json`.

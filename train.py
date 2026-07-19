@@ -204,7 +204,11 @@ def train_epoch(loader, model, optimizer, epoch, args, anchors_full, device, log
         pred_anchor = reshape_anchor(pred_anchor)
 
         bs = imgs.size(0)
-        map_loss = sum(map_loss_fxn(attn_map[k].view(bs, -1), obmap[k].view(bs, -1))
+        # BCELoss requires matching dtypes; the baseline path's beta lands in fp32
+        # (torch.sum is on autocast's fp32-promotion list) but the BDH module's
+        # beta (sigmoid(Linear(...))) stays in the autocast dtype (bf16) — cast
+        # explicitly so both variants match obmap's explicit .float() above.
+        map_loss = sum(map_loss_fxn(attn_map[k].float().view(bs, -1), obmap[k].view(bs, -1))
                        for k in range(len(attn_map)))
         loss = yolo_loss(pred_anchor, gt_param, gi, gj, best_n_list, device) + args.lambda_map * map_loss
 
