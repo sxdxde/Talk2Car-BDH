@@ -153,8 +153,27 @@ is confirmed in sync with local (fix present, no redo needed).
   63.77, checkpointer correctly kept the epoch-98 weights). Compares well to
   paper's 63.30% and the author checkpoint's 65.75% — solid reproduction,
   validates the training loop end-to-end (not just eval-only).
-- **Step 5.2 — BDH variant training** (NEXT): same recipe, `--variant bdh`,
+- **Step 5.2 — BDH variant training** — DONE (2026-07-19): **best AP50 = 64.11**
+  (epoch < 99; both epoch 98 and 99 logged 62.31, so best was set on an
+  earlier epoch not shown in the tail). Vs baseline's 64.89, BDH trails by
+  -0.78 AP50 in aggregate. **This is not yet informative on its own** — the
+  hypothesis is about ambiguous-scene concentration, not aggregate AP50; a
+  small aggregate deficit is consistent with BDH still winning on the
+  ambiguous subset while losing on unambiguous (or just being noise from a
+  single seed). Step 6 stratified eval is what actually tests this.
+  Original crash/fix history below, for reference:
   `mode: C` (config default already `variant: bdh`, `mode: C`, `mult: 2`).
+  First attempt (2026-07-19) crashed on batch 1 with
+  `RuntimeError: Found dtype Float but expected BFloat16` in the BCE aux mask
+  loss (`train_epoch`, `train.py` map_loss line). **Root cause**: baseline's
+  `beta` happens to land in fp32 because `torch.sum` is on autocast's
+  fp32-promotion list, but BDH's `beta = sigmoid(Linear(...))` stays in the
+  autocast dtype (bf16) — `obmap` is explicitly `.float()`'d, so `BCELoss`
+  saw a dtype mismatch only for `variant=bdh`. **Fixed** (train.py, in
+  `train_epoch`): `attn_map[k].float()` before the loss call — same class of
+  bug/fix as the earlier `decode_pred_boxes` bf16→numpy issue. Synced to
+  remote; crashed before any checkpoint was written so this is a clean
+  restart, not a resume:
   ```bash
   cd ~/BDH/Talk2Car/AttnGrounder
   tmux new -s bdh_train   # or reuse attngroun/a fresh window
@@ -163,7 +182,7 @@ is confirmed in sync with local (fix present, no redo needed).
   Expect ~similar wall-clock to the baseline run just completed (same epoch
   count/batch size; BDH module adds ~1% params, shouldn't meaningfully change
   step time). Detach with `Ctrl+b d`, reattach anytime to check progress —
-  no need to babysit it.
+  no need to babysit it. **NOT YET RE-RUN / CONFIRMED PAST BATCH 1.**
 - **Step 6 data prep**: get a free nuscenes.org account, download
   `v1.0-trainval_meta.tgz` (~445MB metadata only), `pip install nuscenes-devkit`,
   run `analysis/build_scene_index.py` against `val_commands.json`.
