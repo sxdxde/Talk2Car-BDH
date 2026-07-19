@@ -57,10 +57,12 @@ def main():
         img = c["t2c_img"]
         ref_class = c["obj_name"]
         ref_box_token = c.get("box_token")
-        sample_token = c["sample_token"]
+        # Talk2Car's "sample_token" field is actually the CAM_FRONT sample_data
+        # token, not nuScenes' keyframe "sample" token (confirmed via
+        # nusc.get('sample_data', tok): channel='CAM_FRONT', is_key_frame=True) -
+        # so it can be passed to get_sample_data directly, no sample lookup needed.
+        cam_token = c["sample_token"]
         try:
-            sample = nusc.get("sample", sample_token)
-            cam_token = sample["data"]["CAM_FRONT"]
             _, boxes, _ = nusc.get_sample_data(cam_token, box_vis_level=vis)
         except Exception as e:
             n_missing += 1

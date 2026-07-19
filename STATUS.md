@@ -183,14 +183,56 @@ is confirmed in sync with local (fix present, no redo needed).
   count/batch size; BDH module adds ~1% params, shouldn't meaningfully change
   step time). Detach with `Ctrl+b d`, reattach anytime to check progress —
   no need to babysit it. **NOT YET RE-RUN / CONFIRMED PAST BATCH 1.**
-- **Step 6 data prep**: get a free nuscenes.org account, download
-  `v1.0-trainval_meta.tgz` (~445MB metadata only), `pip install nuscenes-devkit`,
-  run `analysis/build_scene_index.py` against `val_commands.json`.
-- **Step 6 eval**: `analysis/stratified_eval.py` on both trained models against
-  the scene index → AP50 split into ambiguous/unambiguous — the actual
-  hypothesis test.
+- **Step 6 data prep** — DONE (2026-07-19): downloaded `v1.0-trainval_meta.tgz`
+  (0.43GB, Trainval > Metadata only — NOT the sensor-blob parts) from
+  nuscenes.org, extracted to `~/BDH/Talk2Car/nuscenes/v1.0-trainval/` on
+  remote, `pip install nuscenes-devkit` (v1.2.0) in the `brats` env.
+  **Bug found + fixed**: `build_scene_index.py` originally did
+  `nusc.get("sample", c["sample_token"])` — but Talk2Car's `sample_token`
+  field is actually the **CAM_FRONT `sample_data` token**, not nuScenes'
+  keyframe `sample` token (confirmed via direct lookup:
+  `channel='CAM_FRONT'`, `is_key_frame=True`). All 1163 val commands failed
+  with `KeyError` until fixed to call `nusc.get_sample_data(c["sample_token"],
+  ...)` directly, skipping the `sample` table lookup entirely. Fixed, synced,
+  rerun — confirmed working: `analysis/scene_index_val.json` built,
+  **830 ambiguous / 333 unambiguous / 0 errors** (out of 1163 val commands).
+- **Step 6 eval** (NEXT): `analysis/stratified_eval.py` on both trained
+  models (`checkpoints/full/baseline_best.pth.tar`,
+  `checkpoints/full/bdh_best.pth.tar`) against `scene_index_val.json` → AP50
+  split into ambiguous/unambiguous — the actual hypothesis test. Baseline
+  aggregate AP50=64.89, BDH aggregate AP50=64.11 (BDH trails by -0.78 overall,
+  but that alone doesn't confirm/deny the hypothesis — what matters is
+  whether BDH's relative AP50 is better specifically on the 830 ambiguous
+  scenes vs. the 333 unambiguous ones).
 - **Final table**: AP50 / inference-ms / params for baseline vs BDH (matching
   AttnGrounder's paper format), plus the stratified breakdown.
+
+## RESULT (2026-07-19) — Step 6 stratified eval, hypothesis NOT supported
+```
+              AP50 (all)   AP50 (ambiguous, n=830)   AP50 (unambiguous, n=333)
+baseline        64.92             63.37                      68.77
+bdh             64.06             62.17                      68.77
+Δ (bdh-base)    -0.86             -1.20                       0.00
+```
+(Params: baseline 75.84M, bdh 76.63M, from `[model]` build lines.)
+
+Both variants tie exactly on unambiguous scenes (229/333 hits either way).
+BDH's entire aggregate deficit is concentrated in the ambiguous bucket — but
+in the OPPOSITE direction from the hypothesis: if BDH's growing outer-product
+associative memory gave a retrieval edge on multi-same-class-candidate
+scenes, the ambiguous-bucket gap should favor BDH (or at least be smaller
+than the unambiguous gap). Instead BDH loses more ground exactly where it
+was predicted to win. **The "grounding = in-context retrieval" hypothesis
+from Shaking-Up-VLMs is not supported by this experiment**, at least for
+mode C / mult=2 / single-head / single seed.
+
+Caveats before over-interpreting: single training run per variant (no seed
+averaging), ~1 AP50 gap on 830 examples has non-trivial noise given the
+scale. Worth deciding: (a) write this up as a negative result as-is, (b) try
+ablation modes A/B (already implemented, unvalidated) or different
+mult/n_head/share_qv_encoder settings before concluding, or (c) rerun with a
+second seed to check the gap is stable. NOT YET DECIDED — awaiting user
+direction.
 
 ## Useful commands reference
 ```bash

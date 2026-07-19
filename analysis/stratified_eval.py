@@ -9,9 +9,17 @@ build_scene_index.py). Source-agnostic: any scene_index with the schema
 
 Usage (remote, from AttnGrounder root with train.py + bdh_grounding on path):
     CUDA_VISIBLE_DEVICES=0 python analysis/stratified_eval.py \
-        --config configs/full_a100.yaml \
+        --config configs/full_a100.yaml --variant bdh \
         --resume checkpoints/full/bdh_best.pth.tar \
         --scene-index analysis/scene_index_val.json
+
+    CUDA_VISIBLE_DEVICES=0 python analysis/stratified_eval.py \
+        --config configs/full_a100.yaml --variant baseline \
+        --resume checkpoints/full/baseline_best.pth.tar \
+        --scene-index analysis/scene_index_val.json
+
+--variant overrides model.variant from the config and must match --resume's
+checkpoint architecture (full_a100.yaml defaults to variant: bdh).
 """
 import os
 import sys
@@ -44,7 +52,7 @@ def stratify(hits_by_img, scene_index):
     return {k: (ap50(v), len(v)) for k, v in buckets.items()}
 
 
-def run(config, resume, scene_index_path):
+def run(config, resume, scene_index_path, variant=None):
     import torch
     from torch.utils.data import DataLoader
     from torchvision.transforms import Compose, ToTensor, Normalize
@@ -56,6 +64,8 @@ def run(config, resume, scene_index_path):
     torch.set_grad_enabled(False)
     cfg = P.load_config(config)
     args = P.config_to_args(cfg)
+    if variant:
+        args.variant = variant
     device = P.resolve_device(args.device)
     anchors_full = P.anchors_full_from_list(args.anchors)
     scene_index = json.load(open(scene_index_path))
@@ -103,5 +113,7 @@ if __name__ == "__main__":
     ap.add_argument("--config", required=True)
     ap.add_argument("--resume", required=True)
     ap.add_argument("--scene-index", required=True)
+    ap.add_argument("--variant", default=None, choices=["bdh", "baseline"],
+                    help="override model.variant from the config (must match --resume checkpoint)")
     a = ap.parse_args()
-    run(a.config, a.resume, a.scene_index)
+    run(a.config, a.resume, a.scene_index, a.variant)
