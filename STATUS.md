@@ -304,8 +304,16 @@ modest aggregate gain (+0.17) undersells it; the split is the interesting
 part. Still one run/one seed — not conclusive, but a much more encouraging
 data point than mode C.
 
-**Mode B — IN PROGRESS**, launched 2026-07-19 in tmux session `bdh_B`, same
-command pattern as A. NOT YET DONE.
+**Mode B — DONE (2026-07-20): best AP50 = 60.50** (train), 60.53 (val
+eval), stratified: ambiguous 58.19, unambiguous 66.37 — meaningfully worse
+than baseline/C/A across the board. See FINDINGS.md for the full 3-mode
+table and the interpretive note on why mode A specifically wins (causal
+text-self-contextualization, not just "having associative memory" — modes
+B and C both have that too and both lose on ambiguous scenes).
+
+**Decision: Mode A is the ablation-study winner.** Proceed with Mode A as
+the base for the next round of improvements (Tversky+Focal loss, BDH
+stacking, BDH->attention hybrid — see FINDINGS.md).
 
 ## LATER (after A/B land): improvements beyond the attention swap
 User wants to explore this next, scope not yet defined. Candidate

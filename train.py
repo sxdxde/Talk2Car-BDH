@@ -187,9 +187,18 @@ def reshape_anchor(pred_anchor):
     return pred_anchor
 
 
+def build_map_loss_fxn(args):
+    if args.map_loss == "tversky_focal":
+        return P.TverskyFocalLoss(
+            tversky_alpha=args.tversky_alpha, tversky_beta=args.tversky_beta,
+            tversky_eps=args.tversky_eps, focal_gamma=args.focal_gamma,
+            focal_alpha=args.focal_alpha, lambda_tve=args.lambda_tve, lambda_foc=args.lambda_foc)
+    return nn.BCELoss()
+
+
 def train_epoch(loader, model, optimizer, epoch, args, anchors_full, device, logger, global_step):
     model.train()
-    map_loss_fxn = nn.BCELoss()
+    map_loss_fxn = build_map_loss_fxn(args)
     losses, accm = AverageMeter(), AverageMeter()
     for batch_idx, (imgs, ob8, ob16, ob32, word_id, bbox) in enumerate(loader):
         # NOTE: loader yields object maps coarse->fine already; ob8/16/32 naming is
@@ -280,6 +289,8 @@ def main():
                     help="override model.variant from the config")
     ap.add_argument("--bdh-mode", default=None, choices=["A", "B", "C"],
                     help="override model.bdh.mode from the config (bdh variant only)")
+    ap.add_argument("--map-loss", default=None, choices=["bce", "tversky_focal"],
+                    help="override model.map_loss.type from the config")
     cli = ap.parse_args()
 
     cfg = P.load_config(cli.config)
@@ -290,9 +301,12 @@ def main():
         args.variant = cli.variant
     if cli.bdh_mode:
         args.bdh_mode = cli.bdh_mode
-    # checkpoint tag must encode bdh_mode too, otherwise mode A/B/C runs
-    # overwrite each other's checkpoints under the same "bdh" tag
-    args.ckpt_tag = args.variant if args.variant != "bdh" else f"bdh_{args.bdh_mode}"
+    if cli.map_loss:
+        args.map_loss = cli.map_loss
+    # checkpoint tag must encode bdh_mode and map_loss too, otherwise runs
+    # that differ only in these overwrite each other's checkpoints
+    base_tag = args.variant if args.variant != "bdh" else f"bdh_{args.bdh_mode}"
+    args.ckpt_tag = base_tag + ("_tve" if args.map_loss == "tversky_focal" else "")
     device = P.resolve_device(args.device)
 
     random.seed(args.seed); np.random.seed(args.seed + 1); torch.manual_seed(args.seed + 2)
@@ -313,8 +327,8 @@ def main():
 
     model = build_model(args, corpus).to(device)
     n_params = sum(p.numel() for p in model.parameters())
-    print(f"[model] variant={args.variant} bdh_mode={args.bdh_mode} ckpt_tag={args.ckpt_tag} "
-          f"emb_size={args.emb_size} params={n_params/1e6:.2f}M")
+    print(f"[model] variant={args.variant} bdh_mode={args.bdh_mode} map_loss={args.map_loss} "
+          f"ckpt_tag={args.ckpt_tag} emb_size={args.emb_size} params={n_params/1e6:.2f}M")
 
     optimizer = make_optimizer(model, args)
     start_epoch, global_step, best = 0, 0, -float("inf")

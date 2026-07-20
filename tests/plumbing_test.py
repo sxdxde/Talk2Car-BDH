@@ -18,7 +18,8 @@ def test_configs():
         a = P.config_to_args(cfg)
         for field in ("device", "precision", "emb_size", "variant", "lr",
                       "backbone_lr_divisor", "lambda_map", "batch_size", "nb_epoch",
-                      "bdh_mode", "bdh_mult", "ckpt_dir", "log_csv"):
+                      "bdh_mode", "bdh_mult", "ckpt_dir", "log_csv", "map_loss",
+                      "tversky_alpha", "tversky_beta", "focal_gamma", "focal_alpha"):
             assert hasattr(a, field), f"{name}: missing {field}"
         assert a.variant in ("bdh", "baseline")
         assert a.bdh_mode in ("C", "A", "B")
@@ -54,6 +55,24 @@ def test_checkpoint():
         print(f"  checkpoint: roundtrip epoch={ep} step={st} best={best} + best-copy OK")
 
 
+def test_tversky_focal_loss():
+    torch.manual_seed(0)
+    loss_fn = P.TverskyFocalLoss()
+    target = torch.randint(0, 2, (4, 13, 13)).float()
+
+    pred_far = torch.full_like(target, 0.5).requires_grad_(True)
+    pred_close = (target * 0.9 + (1 - target) * 0.1).requires_grad_(True)
+
+    l_far = loss_fn(pred_far, target)
+    l_close = loss_fn(pred_close, target)
+    assert torch.isfinite(l_far) and torch.isfinite(l_close)
+    assert l_close.item() < l_far.item(), "loss should be lower for predictions closer to target"
+
+    l_far.backward()
+    assert pred_far.grad is not None and torch.isfinite(pred_far.grad).all()
+    print(f"  tversky_focal_loss: far={l_far.item():.4f} close={l_close.item():.4f} grad OK")
+
+
 def test_subset_and_anchors():
     ds = list(range(100))
     assert len(P.maybe_subset(ds, 10)) == 10
@@ -69,6 +88,7 @@ def main():
     test_configs()
     test_csv()
     test_checkpoint()
+    test_tversky_focal_loss()
     test_subset_and_anchors()
     print("ALL PLUMBING CHECKS PASSED.")
 

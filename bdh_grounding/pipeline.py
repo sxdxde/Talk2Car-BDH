@@ -11,6 +11,7 @@ import types
 
 import yaml
 import torch
+import torch.nn as nn
 
 
 # --------------------------------------------------------------------------- #
@@ -50,6 +51,15 @@ def config_to_args(cfg):
     a.bdh_share_qv_encoder = bdh.get("share_qv_encoder", False)
     a.fusion_streams = cfg["model"].get("fusion", {}).get("streams", ["fvisu", "flang_attn"])
     a.lambda_map = cfg["model"].get("lambda_map", 0.1)
+    ml = cfg["model"].get("map_loss", {})
+    a.map_loss = ml.get("type", "bce")               # "bce" | "tversky_focal"
+    a.tversky_alpha = ml.get("tversky_alpha", 0.3)    # FP penalty weight
+    a.tversky_beta = ml.get("tversky_beta", 0.7)      # FN penalty weight (>alpha: favor recall)
+    a.tversky_eps = ml.get("tversky_eps", 1.0)
+    a.focal_gamma = ml.get("focal_gamma", 2.0)
+    a.focal_alpha = ml.get("focal_alpha", 0.25)
+    a.lambda_tve = ml.get("lambda_tve", 1.0)
+    a.lambda_foc = ml.get("lambda_foc", 1.0)
     # train
     t = cfg["train"]
     a.batch_size = t["batch_size"]
@@ -67,6 +77,39 @@ def config_to_args(cfg):
     a.log_csv = cfg["log"]["csv"]
     a.log_every = cfg["log"].get("every_n_steps", 20)
     return a
+
+
+# --------------------------------------------------------------------------- #
+# Tversky + Focal loss for the beta/attn_map aux supervision (alternative to
+# plain BCELoss). Standard formulations (Salehi et al. 2017 Tversky loss,
+# Lin et al. 2017 Focal loss) — the two references ThinkDeeper's map-loss
+# section cites; their exact combination weights weren't recoverable from
+# the PDF (formulas dropped in extraction), so this uses the well-established
+# reference formulas with tunable lambda_tve/lambda_foc weights rather than
+# guessing at undisclosed hyperparameters.
+# --------------------------------------------------------------------------- #
+class TverskyFocalLoss(nn.Module):
+    def __init__(self, tversky_alpha=0.3, tversky_beta=0.7, tversky_eps=1.0,
+                 focal_gamma=2.0, focal_alpha=0.25, lambda_tve=1.0, lambda_foc=1.0):
+        super().__init__()
+        self.a, self.b, self.eps = tversky_alpha, tversky_beta, tversky_eps
+        self.gamma, self.falpha = focal_gamma, focal_alpha
+        self.lambda_tve, self.lambda_foc = lambda_tve, lambda_foc
+
+    def forward(self, pred, target):
+        """pred, target: same shape, pred in [0,1] (post-sigmoid), target in {0,1}."""
+        p, g = pred.reshape(pred.size(0), -1), target.reshape(target.size(0), -1)
+        tp = (p * g).sum(dim=1)
+        fp = (p * (1 - g)).sum(dim=1)
+        fn = ((1 - p) * g).sum(dim=1)
+        tversky_index = (tp + self.eps) / (tp + self.a * fp + self.b * fn + self.eps)
+        l_tve = (1 - tversky_index).mean()
+
+        pt = p * g + (1 - p) * (1 - g)
+        alpha_t = self.falpha * g + (1 - self.falpha) * (1 - g)
+        l_foc = (-alpha_t * (1 - pt).clamp(min=0).pow(self.gamma) * torch.log(pt.clamp(min=1e-6))).mean()
+
+        return self.lambda_tve * l_tve + self.lambda_foc * l_foc
 
 
 def resolve_device(name):
