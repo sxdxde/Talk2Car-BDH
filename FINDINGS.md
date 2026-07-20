@@ -160,6 +160,52 @@ numbers — directionally informative, not strict apples-to-apples.
 None of these are validated yet — treat as planning priors, update this
 table with real numbers as each change is actually tried.
 
+## Params comparison across the field (2026-07-20)
+
+ThinkDeeper's own Table 1 has no params column — had to check each model's
+own paper/repo individually; several aren't publicly stated, marked below.
+
+| Model | Params | Confidence |
+|---|---|---|
+| Ours (baseline / BDH) | 75.84M / 76.63M | High (measured) |
+| VL-BERT | ~118M | Moderate (secondary source) |
+| RSD-LXMERT (LXMERT-based) | ~210-230M | Low-moderate (vanilla LXMERT, not the RSD variant specifically) |
+| MiniGPT-v2 / LLaVA-NeXT / Qwen-VL variants | 7B-72B | High (named by size) |
+| CAVG | not comparable | calls GPT-4 via API, no disclosed size |
+| TransVG / CMSVG / CMRT / MDETR / VLTVG / UNINEXT / ThinkDeeper | not found | not publicly stated in an easily-verifiable place |
+
+**Takeaway**: we're meaningfully smaller than the transformer/LXMERT-class
+models (60-70% of VL-BERT, ~1/3 of RSD-LXMERT) and trivially smaller than
+the VLM-based ones. Legitimate framing: "~76M params, 1-year-old memory
+mechanism, competitive with models 1.5-3x the size" for the CNN-class
+bracket.
+
+## Idea evaluated: YOLOv7 / YOLO26 backbone+head swap (2026-07-20)
+
+Considered replacing Darknet-53 + YOLOv3 head with a modern detector
+(YOLO26: Sept 2025/2026 Ultralytics release, anchor-free, NMS-free,
+Small-Target-Aware Label Assignment; or YOLOv7: E-ELAN backbone,
+re-parameterized). YOLOv3 itself: COCO AP50=57.9. YOLO26 x-variant: 58.99M
+params (smaller than Darknet-53-based YOLOv3's ~62M), COCO mAP@[.5:.95]
+40.9-57.5 across scales — stronger and smaller than our current backbone.
+
+**Scoped out for now, not rejected** — this is a legitimate lever but a
+different research question than the BDH/memory hypothesis, and NOT a
+drop-in swap like the BDH fusion module was:
+- Different channel counts per FPN scale -> `mapping_visu` needs rewriting
+- Anchor-free/NMS-free head is architecturally unlike the current
+  anchor-based `build_target`/`yolo_loss` in `train.py` -> loss logic needs
+  a substantial rewrite, not a swap
+- Would need applying to BOTH baseline and BDH arms to keep the mechanism
+  comparison fair -> effectively a second full mini-study
+- AP50 gain estimate: +2 to +6, wide uncertainty — COCO mAP gains don't
+  linearly transfer to single-box grounding-from-fused-features AP50, no
+  validated extrapolation exists
+
+Revisit after the current BDH-focused round (Tversky+Focal, stacking,
+BDH->attention hybrid) if there's appetite for a second, parallel
+engineering track.
+
 ## Open questions / decisions needed
 
 - Which of A/B/C to build on once B finishes (currently A leads).
