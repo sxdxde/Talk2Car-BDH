@@ -206,6 +206,70 @@ Revisit after the current BDH-focused round (Tversky+Focal, stacking,
 BDH->attention hybrid) if there's appetite for a second, parallel
 engineering track.
 
+**Sharper gain anchor (2026-07-20)**: same-benchmark data point beats COCO
+extrapolation — AttnGrounder (Darknet, 61.32) vs CMSVG (EfficientNet,
+68.61) is a ~7-point AP50 gap from backbone modernization alone, no
+language/fusion changes. Revises the YOLO-swap estimate to roughly +2 to +8.
+
+## Idea queued: pretrained text encoder (2026-07-20)
+
+Ranked against the YOLO swap and a pretrained vision backbone swap as the
+best gain-per-effort lever: our text side (BiLSTM + GloVe, non-contextual,
+2014-era embeddings, no large-scale pretraining) is the most dated
+component in the stack, and every SOTA-bracket model above ~68 AP50 uses a
+pretrained language or joint vision-language backbone (BERT in
+VL-BERT/TransVG, LXMERT's joint pretraining, ViT+BERT+BLIP-init in
+ThinkDeeper) — plausibly a bigger bottleneck than the vision backbone.
+
+**Why this ranks above the YOLO/vision-backbone swaps**: contained scope —
+only replaces `RNNEncoder` and the GloVe-vocab tokenizer/`corpus.pth`
+pipeline with a pretrained model + its own tokenizer (e.g. HuggingFace
+`AutoTokenizer`). `mapping_lang`, the BDH fusion module, vision backbone,
+and detection head are all untouched — BDH just consumes whatever
+`lang_feat` it's handed, dimension-agnostic via `mapping_lang`. Real but
+scoped caveat: still a genuine tokenizer/data-pipeline change, not a
+one-line swap.
+
+**REVISED PLAN (2026-07-20) — offline/frozen, not live**: user's own prior
+research (brain MRI + radiology report segmentation) used a RadBERT text
+encoder run OFFLINE, once, with results cached — the segmentation model
+itself never runs the text encoder live. Directly applicable here and
+strictly better than a live swap:
+
+1. Talk2Car has a small, fully enumerable command set (~12k across
+   train/val/test — test commands' text is available even without box
+   labels) -> embeddings can be precomputed once for every command.
+2. Because it's offline, model size is a non-issue — could use
+   DistilBERT/MiniLM or even something much larger (checked: NX-AI
+   released a real pretrained **xLSTM-7B** checkpoint, 2.3T tokens,
+   HuggingFace `NX-AI/xLSTM-7b` — usable here specifically because it
+   never touches the live model).
+3. Optional domain-adaptive step mirroring the RadBERT recipe: continue
+   masked-LM pretraining on Talk2Car's own ~12k commands before extracting
+   features (cheap, one-time). Checked: no existing "driving-command
+   BERT" equivalent to RadBERT exists publicly (radiology has huge public
+   report corpora like MIMIC-CXR enabling RadBERT; Talk2Car's ~12k
+   commands are nowhere near enough to pretrain from scratch, and nobody
+   has published a driving-domain equivalent) — would need to replicate
+   the recipe ourselves rather than reuse an existing checkpoint.
+4. Cache per-token hidden states (not pooled — fusion needs the full
+   `(T, hidden_dim)` sequence, same contract as today's `lang_feat`) to
+   disk, keyed by command. Storage trivial (~12k x ~30 tokens x 768-dim,
+   well under 1GB even fp32).
+5. `RNNEncoder` becomes a lookup, not a forward pass. `mapping_lang` and
+   everything downstream (BDH, fusion, YOLO head) unchanged.
+
+**Why this beats the live-swap plan**: zero runtime parameter/compute
+cost (the "~76M, competitive with 1.5-3x larger models" framing stays
+fully intact, arguably strengthens), no tokenizer integration into the
+training loop, no architecture cascade. Real tradeoff: frozen means no
+joint fine-tuning of the text encoder against the grounding loss —
+domain-adaptive continued pretraining (step 3) is what compensates for
+that, same role it played for RadBERT.
+
+NOT YET IMPLEMENTED — queued behind the Tversky+Focal result (avoid
+changing two things before reading one result).
+
 ## Open questions / decisions needed
 
 - Which of A/B/C to build on once B finishes (currently A leads).
