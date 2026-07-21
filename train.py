@@ -291,6 +291,8 @@ def main():
                     help="override model.bdh.mode from the config (bdh variant only)")
     ap.add_argument("--map-loss", default=None, choices=["bce", "tversky_focal"],
                     help="override model.map_loss.type from the config")
+    ap.add_argument("--seed", type=int, default=None,
+                    help="override run.seed from the config (for multi-seed reruns)")
     cli = ap.parse_args()
 
     cfg = P.load_config(cli.config)
@@ -303,9 +305,14 @@ def main():
         args.bdh_mode = cli.bdh_mode
     if cli.map_loss:
         args.map_loss = cli.map_loss
-    # checkpoint tag must encode bdh_mode and map_loss too, otherwise runs
-    # that differ only in these overwrite each other's checkpoints
+    if cli.seed is not None:
+        args.seed = cli.seed
+    # checkpoint tag must encode bdh_mode, map_loss, and seed (when
+    # overridden) too, otherwise runs that differ only in these overwrite
+    # each other's checkpoints
     base_tag = args.variant if args.variant != "bdh" else f"bdh_{args.bdh_mode}"
+    if cli.seed is not None:
+        base_tag += f"_seed{args.seed}"
     args.ckpt_tag = base_tag + ("_tve" if args.map_loss == "tversky_focal" else "")
     device = P.resolve_device(args.device)
 

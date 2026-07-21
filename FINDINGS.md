@@ -90,13 +90,45 @@ AIcrowd-hosted server (ECCV 2020 C4AV challenge) — **confirmed closed to
 submissions since August 1, 2020**. Later papers (RSD-LXMERT 2022,
 CAVG/ThinkDeeper 2024-2025) still point to that same dead link as "the"
 evaluation mechanism in their own repos, with no evidence of a second live
-server. Their test-set numbers are therefore most likely **self-reported,
-not independently verified** — the same infrastructure anyone would need
-has been defunct for six years. Conclusion: **we cannot obtain a
-legitimately-verified test-set number, and neither, as far as we can tell,
-can anyone else right now.** We report val-set AP50 only (as we've been
-doing), explicitly caveated against other papers' self-reported test
-numbers — directionally informative, not strict apples-to-apples.
+server. We report val-set AP50 only (as we've been doing), explicitly
+caveated against other papers' self-reported test numbers —
+directionally informative, not strict apples-to-apples.
+
+**REFINEMENT (2026-07-20, user pushback — "are you sure they all
+reported test and not val, how do they get test?")**: checked further,
+found a genuine two-tier split, not one uniform "don't trust any of it":
+- **CMSVG's own paper explicitly states**: "Our work comes as an
+  official entry to the Commands 4 Autonomous Vehicles (C4AV) competition
+  2020" — published Sept 2020, inside the live evaluation window (server
+  closed Aug 1 2020). Its 68.7% test score is plausibly a genuine,
+  server-verified number. Same timing logic applies to AttnGrounder
+  (also ECCV 2020 workshop) — its 61.32 is plausibly legitimate too.
+- **Everything published 2021+** (TransVG, VL-BERT-on-Talk2Car,
+  RSD-LXMERT, CAVG, ThinkDeeper, likely CMRT/VLTVG/MDETR/UNINEXT) —
+  the server was already closed, so these could not have gotten a
+  live-verified test score through the official mechanism. Most
+  plausibly third-party reproductions (possibly run on val, since
+  that's the only split with public GT, then propagated as "test"
+  through citation-chain table-copying without re-verification).
+- Confirmed via the raw `leaderboard.md` (fetched directly, not
+  summarized): **zero provenance metadata** — no dates, no verification
+  status, no val/test distinction beyond a bare number. Explicitly
+  PR-maintained ("pull requests with new results always welcome"), not
+  centrally verified. ThinkDeeper's own paper has no methodology
+  statement on where its Table 1 baseline numbers came from either.
+
+**Implication for how we report/compare**: (1) our own numbers stay on
+val, unavoidable and correct; (2) the comparison that's actually
+bulletproof is our own baseline-vs-BDH result — same split, same code,
+same everything but the fusion mechanism, no provenance problem since we
+control both sides; (3) weight cross-paper numbers by era — CMSVG/
+AttnGrounder (2020) reasonably trustworthy, everything 2021+ cited with
+explicit skepticism, not treated as ground truth; (4) if an airtight
+secondary comparison is wanted, the methodologically strongest move is
+reproducing one more baseline ourselves on our own val split (as already
+done for AttnGrounder: got 64.92 vs. their claimed 63.30 — a real
+sanity check that self-reported numbers do drift) rather than trusting
+any 2021+ paper's number at face value.
 
 ## Ideas evaluated and rejected / deprioritized
 
@@ -128,9 +160,19 @@ numbers — directionally informative, not strict apples-to-apples.
    (default stays `bce`, existing runs unaffected); `ckpt_tag` extended with
    a `_tve` suffix so this doesn't collide with the existing `bdh_A_best`
    checkpoint. Local sanity test added (`tests/plumbing_test.py`): finite,
-   gradients flow, lower loss for closer predictions — passes. **Launching
-   on Mode A now** (`--bdh-mode A --map-loss tversky_focal`). NOT YET
-   RESULTS.
+   gradients flow, lower loss for closer predictions — passes.
+
+   **RESULT (2026-07-20): CONFIRMED FINAL, negative.** Best AP50 = 64.03
+   (training completed all 100 epochs; epoch 98=63.51, epoch 99=63.60,
+   both below the peak — no late-training recovery) — *below*
+   both Mode A's original BCE result (65.09) and even baseline (64.92).
+   The foreground/distractor-imbalance reweighting did not help here,
+   plausibly because the aux `attn_map`/beta loss is a small auxiliary
+   term (`lambda_map=0.1` of total loss) with limited leverage over the
+   primary box-regression objective. Not pursuing further (no
+   hyperparameter sweep on tversky_alpha/beta/focal_gamma planned — low
+   expected payoff for the tuning cost). Stratified eval not run (no
+   reason to chase a losing aggregate result further).
 2. **BDH stacking** (2-3 layers): current `BDHVisualTextAttention` is a
    single lift -> memory-read -> gate -> decode pass, no layer stacking.
    Proposed: iteratively refine region features by re-querying the same
@@ -172,13 +214,62 @@ own paper/repo individually; several aren't publicly stated, marked below.
 | RSD-LXMERT (LXMERT-based) | ~210-230M | Low-moderate (vanilla LXMERT, not the RSD variant specifically) |
 | MiniGPT-v2 / LLaVA-NeXT / Qwen-VL variants | 7B-72B | High (named by size) |
 | CAVG | not comparable | calls GPT-4 via API, no disclosed size |
-| TransVG / CMSVG / CMRT / MDETR / VLTVG / UNINEXT / ThinkDeeper | not found | not publicly stated in an easily-verifiable place |
+| CMSVG (best: RoBERTa-large + EfficientNet-B2) | **~364M** (355M + 9.2M, both standard published sizes) | Moderate — paper doesn't state a total, this is a component-sum estimate |
+| CMSVG (lightweight: DistilBERT-base + EfficientNet-B0) | **~71-72M** (66M + 5.3M) | Moderate, same caveat |
+| TransVG / CMRT / MDETR / VLTVG / UNINEXT / ThinkDeeper | not found | not publicly stated in an easily-verifiable place |
 
 **Takeaway**: we're meaningfully smaller than the transformer/LXMERT-class
 models (60-70% of VL-BERT, ~1/3 of RSD-LXMERT) and trivially smaller than
 the VLM-based ones. Legitimate framing: "~76M params, 1-year-old memory
 mechanism, competitive with models 1.5-3x the size" for the CNN-class
 bracket.
+
+## CORRECTION (2026-07-20): the "beat CMSVG" bracket-1 target was wrong
+
+Checked CMSVG's actual architecture (had only checked its AP50 before, not
+its components) — **CMSVG is not a same-class comparison for our current
+model at all**:
+- CMSVG uses a pretrained **Sentence-BERT** text encoder (STS RoBERTa-large
+  for its best result, or STS DistilBERT-base for a lighter variant) +
+  EfficientNet (ImageNet-pretrained) for vision. It is NOT a "no
+  pretrained language" model — it already has exactly the kind of
+  pretrained-text advantage our BiLSTM+GloVe setup lacks.
+- The headline 68.61-68.7 AP50 comes from the **~364M-parameter**
+  RoBERTa-large + EfficientNet-B2 configuration — ~4.8x our current
+  ~76M — not a comparable size at all.
+- CMSVG's own lightweight variant (DistilBERT-base + EfficientNet-B0,
+  ~71-72M, genuinely size-comparable to us) scores **67.8% test AP50**,
+  "quite close" to the best config per the paper.
+- Similarly, **TransVG (65.83) also uses a pretrained BERT text
+  encoder** (confirmed via its own paper) — also not a clean "no
+  pretrained language" comparison. VLTVG/CMRT's text encoders not
+  independently verified — treat with the same suspicion until checked.
+
+**Revised, more honest bracket structure**:
+- **True "bracket 1"** (no pretrained language at all, size-comparable to
+  us): as far as verified, just **AttnGrounder (61.32)**. Our current
+  best (Mode A, 65.09) already beats this by +3.77 — we may already be
+  ahead of the only genuinely apples-to-apples comparison point.
+- **"Bracket 1.5"** (pretrained text encoder, size-comparable ~70-80M,
+  non-VLM): CMSVG-lightweight (67.8%, ~71-72M), possibly TransVG
+  (65.83, size unconfirmed) — **this is the real target for our planned
+  text-encoder-swap experiment (previously mislabeled "bracket 2")**,
+  not VL-BERT/RSD-LXMERT.
+- **"Bracket 2"** (larger pretrained-language models, ~110-370M):
+  CMSVG-best (68.7%, ~364M), VL-BERT (70.03%, ~118M), RSD-LXMERT
+  (72.64%, ~210-230M).
+
+**Implication for "is 66-67 competitive enough" (user question,
+2026-07-20)**: yes, genuinely strong — in the *true*, no-pretrained-text,
+size-matched bracket, that would put us +5 to +6 over the only confirmed
+comparable model (AttnGrounder). The earlier framing ("beat CMSVG's
+68.61 in bracket 1") set an unfairly high, size-mismatched bar; the
+corrected target for the current (pre-text-swap) phase of the two-phase
+plan is closer to "solidly beat AttnGrounder, approach TransVG's 65.83
+despite TransVG's BERT advantage" — already essentially achieved at
+65.09, would be clearly achieved at 66-67. The CMSVG-lightweight number
+(67.8%, ~71-72M) becomes the target for the *second* phase (after our
+own text-encoder swap), where it's a fair, size-matched comparison.
 
 ## Idea evaluated: YOLOv7 / YOLO26 backbone+head swap (2026-07-20)
 
@@ -269,6 +360,198 @@ that, same role it played for RadBERT.
 
 NOT YET IMPLEMENTED — queued behind the Tversky+Focal result (avoid
 changing two things before reading one result).
+
+**Bracket clarification (2026-07-20, user question)**: does adding a
+pretrained text encoder push us into the VLM bracket, breaking the
+"beat CMSVG" comparison? No — applying the same VLM criteria used
+elsewhere in this doc (built around a large pretrained LM as the core
+reasoning engine + web-scale paired image-text pretraining + generalist/
+prompt-driven capability), none apply here: the encoder stays a frozen
+input feature extractor, text-only pretraining (no paired image-text
+data), still single-task/single-dataset. Directly analogous to VL-BERT
+and RSD-LXMERT, neither labeled "VLM" in ThinkDeeper's own table. Their
+table implies a 3-bracket structure: CNN-only (AttnGrounder/CMSVG/us
+currently, 61-69), **CNN + pretrained language** (VL-BERT 70.03,
+RSD-LXMERT 72.64), VLM/LLM-based (42-77, wide). Adding the text encoder
+would move us from bracket 1 to bracket 2, not bracket 3 — a real but
+more attainable target shift (VL-BERT/RSD-LXMERT territory, not
+ThinkDeeper's). **Reporting plan if implemented**: keep as a separate,
+clearly-labeled second result (pure-mechanism study vs. CMSVG stays
+clean; text-encoder result compared honestly against the bracket-2
+range), not folded into one comparison. Note the offline/frozen design
+means we'd pay the encoder's cost once, not per-inference like VL-BERT/
+RSD-LXMERT do — cheaper at inference even within the same bracket, worth
+highlighting if pursued.
+
+## Idea queued: Distractor-Contrastive Loss (2026-07-20)
+
+Motivated by the user's explicit ask for a genuinely *original* loss —
+not another borrowed-from-literature trick (Tversky+Focal was tried and
+was a clean negative, see above) — built specifically on infrastructure
+nobody else has for Talk2Car: the nuScenes-joined distractor data from
+Step 6. Consensus literature search (2026-07-20) found no existing work
+using ground-truth same-class distractor locations as training-time hard
+negatives for this dataset — the closest adjacent idea found was
+[Relationship-Embedded Representation Learning for Grounding Referring
+Expressions](https://consensus.app/papers/details/993bd93cf36d582c90c3f634033c34b2)
+(Yang et al., IEEE TPAMI 2019), which builds a language-guided relation
+graph between candidates — conceptually adjacent but a much heavier
+hypergraph-style rebuild, not what's proposed here.
+
+**Idea**: during training, on ambiguous images, add a margin/hinge loss
+term that explicitly pushes the model's confidence (`attn_map`/beta) at
+the true target's location higher than at known same-class distractors'
+locations:
+```
+L_distractor = mean[ max(0, margin - (beta_at_target - beta_at_distractor)) ]
+```
+Hard-negative-mining is well-established in metric learning generally,
+but using nuScenes-derived, ground-truth-verified same-class distractor
+locations as the hard negatives, specifically for Talk2Car grounding, is
+the novel part — directly targets the disambiguation hypothesis rather
+than a generic imbalance fix.
+
+**Implementation scope (Steps A-E), destination: `arch2/` (created, see
+`arch2/README.md`), NOT YET BUILT**:
+- **Step A**: extend `analysis/build_scene_index.py`'s approach (as a new
+  `arch2/build_distractor_index.py`, not modifying the existing
+  count-only script) to (1) keep the `camera_intrinsic` currently
+  discarded in `nusc.get_sample_data(...)` and use
+  `nuscenes.utils.geometry_utils.view_points` to project each
+  distractor's 3D box corners to 2D pixel coordinates (native
+  1600x900), and (2) run on **train** as well as val (currently
+  val-only, 8,349 vs 1,163 commands). New correctness-sensitive geometry
+  code — a silently-wrong projection would corrupt the loss without
+  erroring, needs careful testing before trusting it.
+- **Step B**: feed distractor boxes into training via a plain lookup
+  dict keyed by image filename in `train.py` (same pattern
+  `stratified_eval.py` already uses for the scene index) — deliberately
+  NOT modifying `Talk2CarDataset`/the AttnGrounder loader itself, to
+  keep this low-risk and isolated.
+- **Step C**: map distractor box centers to grid cells at each of the 3
+  FPN scales (same style as AttnGrounder's own `build_target` for GT
+  boxes), compute the hinge loss — contributes 0 naturally on
+  unambiguous images.
+- **Step D**: wire in via new `lambda_distractor` config knob (~0.1,
+  matching `lambda_map`'s scale) and `--distractor-index` CLI arg, added
+  to `train_epoch`'s total loss.
+- **Step E**: CPU-testable unit test for the hinge-loss math (dummy
+  tensors, same convention as `test_tversky_focal_loss`), before any GPU
+  run.
+
+**Honest effort/risk assessment**: bigger lift than anything built so
+far — new geometry code, a new data-prep pass over the full train split,
+a new loss term threaded through the training loop. Realistically a few
+hours of careful work, not a quick patch. Explicitly deferred — user
+wants this scoped and logged now, built later, not immediately.
+
+## Mode A seed confirmation — RESULT (2026-07-21): concerning, not conclusive
+
+Seed=1 (same config as the winning Mode A run, `--seed 1`): **best AP50
+= 64.20** (epoch 98=62.91, epoch 99=62.82, both below peak — final,
+matches the no-late-improvement pattern seen in every prior run).
+
+```
+                AP50 (all)
+baseline           64.92
+mode A, seed=0     65.09
+mode A, seed=1     64.20
+```
+
+Seed=1 lands *below* baseline, not above — the two seeds bracket
+baseline rather than both beating it. On the aggregate number alone,
+this is a real yellow flag: can't currently rule out that Mode A's true
+average effect on aggregate AP50 is near zero, and seed=0 was on the
+fortunate side of normal run-to-run variance (~0.9 point spread between
+seeds, comparable in magnitude to the ambiguous-scene effect itself).
+
+**Not conclusive on its own** — the aggregate isn't the real test. Next
+step: run `stratified_eval.py` on `bdh_A_seed1_best.pth.tar` to check
+whether the *qualitative* pattern replicates (better than baseline on
+ambiguous specifically, even if the aggregate is less flattering) or
+fails there too (which would suggest seed=0's ambiguous-scene win was
+itself partly noise). Result pending.
+
+## Mode A seed confirmation — STRATIFIED RESULT (2026-07-21): does NOT replicate
+
+```
+                     AP50 (all)   AP50 (ambiguous, n=830)   AP50 (unambiguous, n=333)
+baseline               64.92             63.37                      68.77
+mode C                 64.06             62.17                      68.77
+mode A, seed=0         65.09             63.98                      67.87
+mode A, seed=1         64.14             62.89                      67.27
+mode B                 60.53             58.19                      66.37
+```
+
+**Seed=1 is worse than baseline on ambiguous scenes too** (62.89 vs
+63.37, delta -0.48) — not just the aggregate. Its pattern (uniform
+deficit across both buckets) looks like modes B/C's failure mode, not
+like seed=0's specific disambiguation trade-off. The two Mode A seeds
+disagree on the ambiguous delta by ~1.1 points (+0.61 vs -0.48) —
+comparable to or larger than the effect itself. Averaged across both
+seeds, the ambiguous-scene delta is ≈ +0.065 — indistinguishable from
+zero.
+
+**Honest conclusion as of now: no BDH kernel formulation tested so far
+(A across 2 seeds, B, C) has robustly replicated an ambiguous-scene
+advantage over baseline.** Seed=0's result, taken alone, overstated the
+case — exactly the failure mode seed confirmation exists to catch.
+
+**Gap exposed**: baseline has only been run once (seed=0 equivalent).
+We don't actually know baseline's own seed-to-seed variance, so every
+delta computed so far assumes a stable baseline reference that hasn't
+itself been verified. Not previously flagged as a design gap until now.
+
+**Real options going forward, not yet decided**:
+1. Run a 3rd Mode A seed to break the tie — 2-of-3 same-direction would
+   be informative (either "real but noisy, mostly positive" or "no
+   effect, seed=0 was the outlier"); 3rd seed disagreeing with both
+   would mean high variance, more seeds needed regardless.
+2. Run a 2nd baseline seed to establish its own variance — currently a
+   real gap, not just an omission on the BDH side.
+3. Reframe the paper's honest current finding as: a rigorously seed-
+   tested negative result across all three tested BDH kernel
+   formulations — still a real, publishable contribution (a well-tested
+   negative result was always on the table as a legitimate outcome, see
+   "Why Keep Pursuing This" framing), just not the "Mode A wins" story
+   the two-phase plan below was built around.
+4. Treat this as motivation to prioritize the higher-potential
+   mechanism changes (BDH->attention hybrid, distractor-contrastive
+   loss) over declaring Mode A "the winner" prematurely — the ablation
+   study's real conclusion right now is "none of A/B/C robustly show
+   the hypothesized effect," which argues for trying a structurally
+   different mechanism (the hybrid) rather than more seeds of a
+   formulation with no confirmed effect to begin with.
+
+**DECIDED (2026-07-21): options 1+2 (tie-breaking Mode A seed=2, and
+baseline seed=1)**, run sequentially before touching the hybrid or
+distractor-contrastive loss. No new code needed — same `--seed` CLI
+flag already built and confirmed working from the seed=1 run.
+Checkpoints: `bdh_A_seed2_best.pth.tar`, `baseline_seed1_best.pth.tar`.
+NOT YET RUN.
+
+## DECIDED (2026-07-20): two-phase paper structure
+
+Goal explicitly reframed by user: not beating SOTA, but demonstrating
+BDH's potential as a novel, viable mechanism for grounding — "a brand-new
+architecture shows promise" is the thesis, not a leaderboard claim.
+
+**Phase 1**: maximize competitiveness with the current architecture
+(BiLSTM+GloVe, no pretrained text) against the true, size-matched,
+no-pretrained-language bracket (realistically just AttnGrounder, 61.32 —
+see the CMSVG/TransVG correction below). This isolates the BDH mechanism
+contribution cleanly, no confounds.
+
+**Phase 2**: swap in the offline/frozen pretrained text encoder (already
+queued), and re-run baseline-vs-BDH as a **paired comparison again** at
+that tier — not just report an isolated post-swap number. Condition for
+this to stay scientifically coherent (not scope creep / not "picking up
+scraps"): phase 2 must ask the same question phase 1 did — does the
+ambiguous-scene advantage persist once text representation quality
+improves — rather than becoming an unrelated bolt-on score-chasing
+experiment. Target bracket for phase 2: CMSVG-lightweight (67.8%,
+~71-72M) and similar pretrained-text/moderate-size models — see
+correction below, not VL-BERT/RSD-LXMERT (those are a further tier up).
 
 ## Open questions / decisions needed
 

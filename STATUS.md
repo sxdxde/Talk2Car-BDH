@@ -332,6 +332,27 @@ committed):
   separate "does BDH help" from "does dropping the beta*visual stream
   help/hurt".
 
+## CURRENT (2026-07-20): running mode A seed confirmation
+Tversky+Focal loss on Mode A: confirmed final negative, best AP50=64.03
+(see FINDINGS.md for full detail) — not pursued further. Ablation winner
+remains Mode A (plain BCE), best AP50=65.09.
+
+**Now running**: multi-seed confirmation of Mode A's base result (does
+the +0.61 ambiguous-scene advantage replicate, or was it noise from one
+seed?). Added `--seed` CLI override to `train.py` (same pattern as
+`--variant`/`--bdh-mode`/`--map-loss`), synced, launched in tmux
+`bdh_A_seed1`:
+```bash
+CUDA_VISIBLE_DEVICES=0 python train.py --config configs/full_a100.yaml --variant bdh --bdh-mode A --seed 1
+```
+Checkpoint tag: `bdh_A_seed1` (won't collide with the original
+`bdh_A_best.pth.tar`, seed=0). NOT YET DONE.
+
+**`arch2/` folder created** (local + needs sync) — placeholder home for
+the Distractor-Contrastive Loss idea (see FINDINGS.md "Idea queued:
+Distractor-Contrastive Loss"). Explicitly scoped but NOT YET BUILT —
+user wants this logged now, implemented later.
+
 ## Useful commands reference
 ```bash
 # reattach remote tmux
