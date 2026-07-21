@@ -527,8 +527,79 @@ itself been verified. Not previously flagged as a design gap until now.
 baseline seed=1)**, run sequentially before touching the hybrid or
 distractor-contrastive loss. No new code needed — same `--seed` CLI
 flag already built and confirmed working from the seed=1 run.
-Checkpoints: `bdh_A_seed2_best.pth.tar`, `baseline_seed1_best.pth.tar`.
-NOT YET RUN.
+
+**CORRECTION (2026-07-21)**: a run of epoch logs (best AP50=64.89) was
+initially misattributed to "Mode A seed=2" without confirming which job
+it actually was — no `[model]` line was ever seen for it, and the
+assumption turned out to be wrong. Checked `checkpoints/full/` directly:
+`bdh_A_seed2_best.pth.tar` / `_last.pth.tar` do not exist anywhere (Mode
+A seed=2 was never actually launched), while `baseline_seed1_best.pth.tar`
+/ `_last.pth.tar` both exist with real timestamps (Jul 21 09:11/09:50) —
+**the 64.89 result belongs to baseline seed=1, not Mode A seed=2.**
+Retracting the earlier "Mode A seed=2 CONFIRMED FINAL" entry and the
+"concurrent-GPU-jobs corrupted the checkpoint" theory built on top of
+it — there was no corruption, just a misattributed log. Lesson: always
+confirm the `[model]` line before logging a result, don't infer which
+job a pasted log belongs to from conversation context alone.
+
+**Corrected current state**: baseline seed=1 ran successfully, checkpoint
+exists, best AP50 (train-logged) = 64.89 — stratified eval not yet run
+on it. **Mode A seed=2 has not been run yet** — still needed to complete
+the 3-seed picture:
+```
+                     AP50 (all)
+baseline (seed=0)       64.92
+baseline (seed=1)       64.89 (train-logged; stratified pending)
+mode A, seed=0          65.09
+mode A, seed=1          64.14
+mode A, seed=2          NOT YET RUN
+```
+Interesting early signal on baseline's own variance: two baseline seeds
+(64.92, 64.89) are much tighter than Mode A's two seeds (65.09, 64.14) —
+suggestive that baseline is more stable and Mode A's spread is real
+variance from the architecture/mechanism, not just generic training
+noise, though n=2 per arm is still thin evidence.
+
+**Next steps**: (1) run `stratified_eval.py` on
+`baseline_seed1_best.pth.tar` to get baseline's second stratified data
+point; (2) actually launch Mode A seed=2 (for real this time) to
+complete the 3-seed comparison — run it alone, not concurrently with
+anything else on the GPU.
+
+## Baseline seed=1 stratified — RESULT (2026-07-21): baseline's own split is noisy too
+
+```
+                      AP50 (all)   AP50 (ambiguous, n=830)   AP50 (unambiguous, n=333)
+baseline, seed=0        64.92             63.37                      68.77
+baseline, seed=1        64.92             64.70                      65.47
+mode A, seed=0           65.09             63.98                      67.87
+mode A, seed=1           64.14             62.89                      67.27
+mode C                   64.06             62.17                      68.77
+mode B                   60.53             58.19                      66.37
+```
+
+Baseline's aggregate is coincidentally identical across seeds (64.92
+both times), but its **stratified split is not stable**: ambiguous
+ranges 63.37-64.70 (spread 1.33), unambiguous swings 65.47-68.77 (spread
+3.30 — plausibly partly explained by smaller sample size there, n=333 vs
+n=830, but still substantial).
+
+**This further undercuts the original Mode A seed=0 result**: its
+ambiguous score (63.98) now falls *inside* baseline's own observed
+range (63.37-64.70) — no longer clearly a win once baseline's own
+variance is accounted for. Mode A seed=1's ambiguous score (62.89) is
+the only BDH result that falls *below* baseline's full observed range
+on either seed — a more consistent (if unfavorable) signal than seed=0
+provided.
+
+**Revised honest conclusion**: the case for Mode A's ambiguous-scene
+advantage is weaker than it looked even after the seed=1 disappointment
+alone — part of what looked like a BDH effect could just as easily be
+baseline noise. This is exactly why the baseline reseed mattered as much
+as the BDH reseed did; a single-baseline-seed comparison was never
+well-powered enough to support the original claim. Mode A seed=2 and
+ideally a 3rd baseline seed are needed before drawing a final conclusion
+on this hypothesis.
 
 ## DECIDED (2026-07-20): two-phase paper structure
 

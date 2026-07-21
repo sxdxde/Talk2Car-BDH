@@ -339,7 +339,11 @@ def main():
 
     optimizer = make_optimizer(model, args)
     start_epoch, global_step, best = 0, 0, -float("inf")
-    if args.resume and os.path.isfile(args.resume):
+    if args.resume:
+        if not os.path.isfile(args.resume):
+            raise FileNotFoundError(
+                f"--resume checkpoint not found: {args.resume!r} — refusing to silently "
+                f"train from scratch when a resume was explicitly requested.")
         start_epoch, global_step, best = P.load_checkpoint(args.resume, model, optimizer, map_location=device)
         print(f"[resume] from {args.resume} epoch={start_epoch} step={global_step} best={best}")
 

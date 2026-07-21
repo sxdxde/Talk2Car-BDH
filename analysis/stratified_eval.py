@@ -81,9 +81,12 @@ def run(config, resume, scene_index_path, variant=None, bdh_mode=None):
 
     corpus = val_ds.corpus
     model = T.build_model(args, corpus).to(device)
-    if resume and os.path.isfile(resume):
-        P.load_checkpoint(resume, model, map_location=device)
-        print(f"[loaded] {resume}")
+    if not resume or not os.path.isfile(resume):
+        raise FileNotFoundError(
+            f"--resume checkpoint not found: {resume!r} — refusing to evaluate an "
+            f"untrained/randomly-initialized model silently.")
+    P.load_checkpoint(resume, model, map_location=device)
+    print(f"[loaded] {resume}")
     model.eval()
 
     hits_by_img = {}
