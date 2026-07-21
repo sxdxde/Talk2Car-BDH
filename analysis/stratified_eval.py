@@ -52,7 +52,7 @@ def stratify(hits_by_img, scene_index):
     return {k: (ap50(v), len(v)) for k, v in buckets.items()}
 
 
-def run(config, resume, scene_index_path, variant=None, bdh_mode=None):
+def run(config, resume, scene_index_path, variant=None, bdh_mode=None, growing_scales=False):
     import torch
     from torch.utils.data import DataLoader
     from torchvision.transforms import Compose, ToTensor, Normalize
@@ -68,6 +68,8 @@ def run(config, resume, scene_index_path, variant=None, bdh_mode=None):
         args.variant = variant
     if bdh_mode:
         args.bdh_mode = bdh_mode
+    if growing_scales:
+        args.bdh_growing_scales = True
     device = P.resolve_device(args.device)
     anchors_full = P.anchors_full_from_list(args.anchors)
     scene_index = json.load(open(scene_index_path))
@@ -122,5 +124,7 @@ if __name__ == "__main__":
                     help="override model.variant from the config (must match --resume checkpoint)")
     ap.add_argument("--bdh-mode", default=None, choices=["A", "B", "C"],
                     help="override model.bdh.mode from the config (must match --resume checkpoint)")
+    ap.add_argument("--growing-scales", action="store_true",
+                    help="override model.bdh.growing_scales to True (must match --resume checkpoint)")
     a = ap.parse_args()
-    run(a.config, a.resume, a.scene_index, a.variant, a.bdh_mode)
+    run(a.config, a.resume, a.scene_index, a.variant, a.bdh_mode, a.growing_scales)

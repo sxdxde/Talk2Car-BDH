@@ -19,7 +19,8 @@ def test_configs():
         for field in ("device", "precision", "emb_size", "variant", "lr",
                       "backbone_lr_divisor", "lambda_map", "batch_size", "nb_epoch",
                       "bdh_mode", "bdh_mult", "ckpt_dir", "log_csv", "map_loss",
-                      "tversky_alpha", "tversky_beta", "focal_gamma", "focal_alpha"):
+                      "tversky_alpha", "tversky_beta", "focal_gamma", "focal_alpha",
+                      "bdh_growing_scales"):
             assert hasattr(a, field), f"{name}: missing {field}"
         assert a.variant in ("bdh", "baseline")
         assert a.bdh_mode in ("C", "A", "B")

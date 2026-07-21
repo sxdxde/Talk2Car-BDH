@@ -116,7 +116,8 @@ def build_model(args, corpus):
         return grounding_model(corpus=corpus, emb_size=args.emb_size, variant="bdh",
                                bdh_mode=args.bdh_mode, bdh_mult=args.bdh_mult,
                                bdh_n_head=args.bdh_n_head, bdh_dropout=args.bdh_dropout,
-                               bdh_share_qv_encoder=args.bdh_share_qv_encoder)
+                               bdh_share_qv_encoder=args.bdh_share_qv_encoder,
+                               bdh_growing_scales=args.bdh_growing_scales)
     # baseline: call the STOCK grounding_model — no INTEGRATION.md edits needed,
     # so the reproduction / author-checkpoint eval runs against the unmodified repo.
     return grounding_model(corpus=corpus, emb_size=args.emb_size)
@@ -293,6 +294,8 @@ def main():
                     help="override model.map_loss.type from the config")
     ap.add_argument("--seed", type=int, default=None,
                     help="override run.seed from the config (for multi-seed reruns)")
+    ap.add_argument("--growing-scales", action="store_true",
+                    help="override model.bdh.growing_scales to True (cross-scale growing memory, bdh variant only)")
     cli = ap.parse_args()
 
     cfg = P.load_config(cli.config)
@@ -307,12 +310,16 @@ def main():
         args.map_loss = cli.map_loss
     if cli.seed is not None:
         args.seed = cli.seed
-    # checkpoint tag must encode bdh_mode, map_loss, and seed (when
-    # overridden) too, otherwise runs that differ only in these overwrite
-    # each other's checkpoints
+    if cli.growing_scales:
+        args.bdh_growing_scales = True
+    # checkpoint tag must encode bdh_mode, map_loss, seed, and growing_scales
+    # (when overridden) too, otherwise runs that differ only in these
+    # overwrite each other's checkpoints
     base_tag = args.variant if args.variant != "bdh" else f"bdh_{args.bdh_mode}"
     if cli.seed is not None:
         base_tag += f"_seed{args.seed}"
+    if args.bdh_growing_scales:
+        base_tag += "_grow"
     args.ckpt_tag = base_tag + ("_tve" if args.map_loss == "tversky_focal" else "")
     device = P.resolve_device(args.device)
 
@@ -335,7 +342,8 @@ def main():
     model = build_model(args, corpus).to(device)
     n_params = sum(p.numel() for p in model.parameters())
     print(f"[model] variant={args.variant} bdh_mode={args.bdh_mode} map_loss={args.map_loss} "
-          f"ckpt_tag={args.ckpt_tag} emb_size={args.emb_size} params={n_params/1e6:.2f}M")
+          f"growing_scales={args.bdh_growing_scales} ckpt_tag={args.ckpt_tag} "
+          f"emb_size={args.emb_size} params={n_params/1e6:.2f}M")
 
     optimizer = make_optimizer(model, args)
     start_epoch, global_step, best = 0, 0, -float("inf")

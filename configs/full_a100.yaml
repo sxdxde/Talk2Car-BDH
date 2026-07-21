@@ -27,6 +27,9 @@ model:
     dropout: 0.1
     share_scales: true
     share_qv_encoder: false  # set true to tie query/value encoders and trim params further
+    growing_scales: false    # "Mode E": cross-scale growing memory -- each scale's own
+                              # output becomes the next (finer) scale's region prior,
+                              # instead of each of the 3 FPN scales starting from scratch
   fusion:
     streams: [fvisu, flang_attn]
   lambda_map: 0.1

@@ -118,11 +118,22 @@ class BDHVisualTextAttention(nn.Module):
         return v * cos + v_rot * sin
 
     # ---- forward -----------------------------------------------------------
-    def forward(self, image_feat, lang_feat):
+    def forward(self, image_feat, lang_feat, region_prior=None):
+        """region_prior: optional (B, d, H_prev, W_prev) — the previous (coarser)
+        scale's own output, for cross-scale growing memory ("Mode E"). Upsampled
+        and folded into this scale's region features as a residual prior, so
+        finer scales build on what coarser scales found, instead of each scale
+        starting from scratch. None (default) reproduces the original per-scale-
+        independent behavior exactly. Callers reuse the previous call's own
+        `lang_feat_attn` output directly as the next call's `region_prior` --
+        already the right shape, no extra state needed."""
         B, C, H, W = image_feat.shape
         assert C == self.d, f"channel {C} != configured dim {self.d}"
         R = H * W
         G = image_feat.flatten(2).transpose(1, 2)        # (B, R, d)  region features
+        if region_prior is not None:
+            prior_up = F.interpolate(region_prior, size=(H, W), mode="nearest")
+            G = G + prior_up.flatten(2).transpose(1, 2)
         Q = lang_feat                                    # (B, T, d)  word features
         G = self.ln(G)
         Q = self.ln(Q)

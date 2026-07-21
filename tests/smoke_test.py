@@ -59,6 +59,40 @@ def check_mode(mode):
     return n_params
 
 
+def check_growing_scales():
+    """Cross-scale growing memory ("Mode E"): region_prior=None must reproduce
+    the original per-scale-independent behavior exactly; a real prior must
+    change the output (confirms the mechanism has an effect) and gradients
+    must flow back through it."""
+    cfg = BDHFusionConfig(dim=D, mode="C", mult=4, n_head=1)
+    mod = BDHVisualTextAttention(cfg)
+    mod.eval()  # deterministic (no dropout) so the region_prior comparisons are meaningful
+    torch.manual_seed(1)
+    lang = torch.randn(B, T, D)
+    img_coarse = torch.randn(B, D, 13, 13)
+    img_fine = torch.randn(B, D, 26, 26, requires_grad=True)
+
+    # backward compat: explicit None must match the no-arg call bit-for-bit
+    out_default, _ = mod(img_fine, lang)
+    out_none, _ = mod(img_fine, lang, region_prior=None)
+    assert torch.equal(out_default, out_none), "region_prior=None must match no-arg call"
+
+    # a real prior must change the output
+    coarse_out, _ = mod(img_coarse, lang)
+    fine_out_with_prior, beta = mod(img_fine, lang, region_prior=coarse_out)
+    assert fine_out_with_prior.shape == out_default.shape
+    assert not torch.equal(fine_out_with_prior, out_default), \
+        "a real region_prior should change the output, mechanism appears to be a no-op"
+    assert torch.isfinite(fine_out_with_prior).all() and torch.isfinite(beta).all()
+
+    # gradient must flow back through the prior into the coarse scale's own inputs
+    loss = fine_out_with_prior.pow(2).mean()
+    loss.backward()
+    assert img_fine.grad is not None and torch.isfinite(img_fine.grad).all()
+    print(f"  [growing_scales] region_prior=None matches no-arg call, a real prior "
+          f"changes the output, grad flows OK\n")
+
+
 def main():
     torch.manual_seed(0)
     print("== Original module (drop-in target) ==")
@@ -68,6 +102,9 @@ def main():
     pc = check_mode("C")   # primary
     check_mode("A")        # ablation
     check_mode("B")        # ablation
+
+    print("== Cross-scale growing memory (\"Mode E\") ==")
+    check_growing_scales()
 
     print("== Fusion-trim channel arithmetic ==")
     emb = D

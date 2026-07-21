@@ -49,6 +49,7 @@ def config_to_args(cfg):
     a.bdh_n_head = bdh.get("n_head", 1)
     a.bdh_dropout = bdh.get("dropout", 0.1)
     a.bdh_share_qv_encoder = bdh.get("share_qv_encoder", False)
+    a.bdh_growing_scales = bdh.get("growing_scales", False)
     a.fusion_streams = cfg["model"].get("fusion", {}).get("streams", ["fvisu", "flang_attn"])
     a.lambda_map = cfg["model"].get("lambda_map", 0.1)
     ml = cfg["model"].get("map_loss", {})

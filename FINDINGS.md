@@ -601,6 +601,82 @@ well-powered enough to support the original claim. Mode A seed=2 and
 ideally a 3rd baseline seed are needed before drawing a final conclusion
 on this hypothesis.
 
+## TOP CONTENDER (2026-07-21): cross-scale growing memory ("Mode E")
+
+Motivated by user's "favor BDH's nature, don't just force a swap-in"
+question. Important tension surfaced first: **Mode B is the one that
+most faithfully preserves BDH's "natural" causal/sequential design
+(single causal sequence, RoPE, growing memory as words-then-regions
+unfold) — and it's the clear worst performer of the three.** So "lean
+into BDH's causal/sequential nature" is not obviously supported by our
+own evidence — regions and words have no real sequence order, likely
+why B struggles. This idea is different: it doesn't reintroduce
+causal/RoPE structure at all.
+
+**Idea**: right now the fusion module runs **independently at each of
+the 3 FPN scales** (13x13, 26x26, 52x52) — each scale builds its
+associative memory (`rho = K^T @ V`) from scratch, no state shared
+across scales despite `share_scales: true` sharing only the *parameters*,
+not the *computed memory*. Multi-scale detection has a natural
+coarse-to-fine order, unlike words/regions which don't — so let `rho`
+**persist and accumulate across scales**: the 13x13 pass builds an
+initial memory, the 26x26 pass extends it (`rho_new = rho_prev +
+K_scale^T @ V_scale`) rather than recomputing from scratch, then 52x52
+extends further. Uses BDH's growing-memory concept in a way that maps
+onto real structure in this task, without repeating Mode B's mistake.
+
+**Rank: top contender**, ahead of the hybrid (Mode D) and stacking for
+immediate implementation — it's the most direct, evidence-motivated
+answer to "how do we actually exploit what makes BDH different," and
+it's a new axis (orthogonal to which of A/B/C's *intra-scale* structure
+is used) so it doesn't depend on Mode A's seed-variance situation
+resolving first.
+
+**Implementation scope**: modify `BDHVisualTextAttention.forward()` (and
+`_forward_C` specifically, since B/A don't have a clean analogous `rho`
+object to accumulate the same way) to accept/return an optional memory
+state threaded across scale-calls; modify `grounding_model.py`'s
+3-scale forward loop to thread that state through; new config knob
+(e.g. `growing_scales: true`) + CLI override, same pattern as prior
+mode/loss toggles; local CPU test before any GPU run.
+
+**IMPLEMENTED (2026-07-21)**: design corrected before coding (see below),
+then built and locally tested, all green:
+- `bdh_grounding/bdh_fusion.py`: `BDHVisualTextAttention.forward()` gains
+  optional `region_prior` (upsampled + added to region features before
+  the mode-specific kernel runs) — works uniformly with modes A/B/C
+  since the intervention point is before mode dispatch.
+- `external/AttnGrounder/model/grounding_model.py`: new `bdh_growing_scales`
+  constructor kwarg; `text_attn` threads `region_prior`; the 3-scale
+  forward loop passes each scale's own output as the next (finer)
+  scale's prior when enabled (order confirmed coarse->fine: 13x13,
+  26x26, 52x52).
+- `bdh_grounding/pipeline.py` / `train.py` / `analysis/stratified_eval.py`
+  / `configs/full_a100.yaml`: config field + `--growing-scales` CLI
+  override + `ckpt_tag` suffix (`_grow`), same pattern as prior toggles.
+- New CPU test (`tests/smoke_test.py::check_growing_scales`): confirms
+  `region_prior=None` exactly matches the no-arg call (backward compat),
+  a real prior measurably changes the output (mechanism isn't a no-op),
+  and gradients flow through it. Caught and fixed one test bug along the
+  way (dropout stochasticity in train mode made the comparison
+  flaky — fixed by using eval mode for the deterministic check).
+- All 4 local test suites pass (smoke, plumbing, integration, stratify-logic).
+
+**DESIGN CORRECTION made before implementing (important)**: the first
+description of this idea ("accumulate `rho` across scales") was flawed
+— `rho = K^T @ V` is built entirely from words (`Q = lang_feat`), which
+are identical at every scale, so naive accumulation would just scale
+the same matrix 1x/2x/3x, not add real information. Corrected design:
+let each scale's *output* enrich the next scale's *region* features
+(residual, upsampled) instead — genuine coarse-to-fine information
+flow, and simpler than the original plan since it doesn't need to be
+mode-specific.
+
+**NOT YET RUN ON GPU** — ready to sync and launch as soon as Mode A
+seed=2 (or whichever run is currently occupying the GPU) finishes.
+Recommended first run: `--variant bdh --bdh-mode C --growing-scales`
+(pairs the new cross-scale mechanism with the primary kernel).
+
 ## DECIDED (2026-07-20): two-phase paper structure
 
 Goal explicitly reframed by user: not beating SOTA, but demonstrating
