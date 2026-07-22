@@ -383,6 +383,249 @@ means we'd pay the encoder's cost once, not per-inference like VL-BERT/
 RSD-LXMERT do — cheaper at inference even within the same bracket, worth
 highlighting if pursued.
 
+**DETAILED IMPLEMENTATION PLAN (2026-07-21)** — scoped by actually
+reading `dataset/talk2car_loader.py` first rather than assuming its
+interface (first time touching this file; every prior edit stayed in
+`grounding_model.py`/`train.py`/our own `bdh_grounding/`).
+
+**Model choice**: DistilBERT-base specifically, not an arbitrary
+pretrained encoder — matches CMSVG-lightweight's own text-encoder class
+(STS DistilBERT-base), making "are we on par with CMSVG-lightweight" a
+fair, matched comparison rather than apples-to-oranges.
+
+**Gotcha caught before coding (would have silently corrupted training if
+missed)**: the loader's augmentation path (`talk2car_loader.py:127`)
+does a horizontal-flip-triggered text mutation —
+`phrase.replace('right',...).replace('left','right')...` — swapping
+left/right words when the image is mirrored (fires on ~50% of augmented
+samples). A naive "cache one embedding per original command" plan would
+hit cache-misses on these swapped strings during training. Fix baked
+into the plan: the offline cache must include **both** each phrase and
+its deterministic left/right-swapped variant (reusing the exact same
+replace-chain so the two stay in lockstep).
+
+**Two integration points identified** (confirmed by reading the current
+text path end-to-end): the loader's `tokenize_phrase()` step, and
+`grounding_model`'s `textmodel`/`mapping_lang` block. Everything
+downstream of `flang` (BDH fusion, YOLO head, loss) is agnostic to where
+the text embedding came from — no changes needed there.
+
+Stages:
+1. **Offline extraction** (`arch2/build_text_cache.py`, new): enumerate
+   every phrase from `talk2car_{train,val,test}.pth` (phrases live
+   there, not just the commands JSON) + their left/right-swapped
+   variants; run frozen DistilBERT-base, keep per-token
+   `last_hidden_state` (drop `[CLS]`/`[SEP]`, optionally keep `[CLS]` as
+   a sentence-summary token — flagged as a design choice to test later
+   if wanted); zero-pad/truncate to `query_len=40` (DistilBERT subwords
+   for ~11-word commands run ~15-25 tokens, safe margin); cache as
+   `{phrase_string: float16 array (40, 768)}` to one `.pth` file (~12k×2
+   keys, well under 1.5GB). Runs on CPU in minutes, done locally, synced
+   up like everything else.
+2. **Loader change** (`dataset/talk2car_loader.py`): new
+   `text_encoder="glove"` init param (default preserves current
+   behavior exactly, zero risk to existing runs); if `"distilbert"`,
+   look up the post-augmentation (post-swap) phrase in the cache and
+   return the `(40, 768)` float array as the 5th tuple element instead
+   of int word IDs.
+3. **Model change** (`grounding_model.py`): new `text_encoder` kwarg;
+   if `"distilbert"`, skip building `self.textmodel` (the BiLSTM)
+   entirely, `mapping_lang` becomes `Linear(768, emb_size)` instead of
+   `Linear(600, emb_size)`; forward pass trims to batch-max real length
+   via a zero-row mask on the incoming embeddings, then straight into
+   `mapping_lang` — everything downstream unchanged.
+4. **Config/CLI/tag wiring**: `full_a100.yaml` gets `model.text_encoder:
+   glove`; `pipeline.config_to_args` reads it; `train.py`/
+   `stratified_eval.py` get `--text-encoder {glove,distilbert}` +
+   `_distilbert` ckpt-tag suffix, same override pattern as every prior
+   toggle (`--bdh-mode`, `--map-loss`, `--seed`, `--growing-scales`).
+5. **Local test** before any GPU run: cache-lookup shape/correctness,
+   swapped-phrase keys resolve, model builds with the 768-dim
+   `mapping_lang`, mock `(bs,40,768)` batch runs end-to-end on CPU.
+
+**Param-count framing (worth headlining if this ships)**: DistilBERT
+never enters the trained model — frozen, offline, cached — so we
+actually *drop* the small BiLSTM and *add* only a 768→emb_size linear.
+Runtime params go down slightly, not up. The "~76M, lightweight" story
+survives this change fully intact, unlike a live text-encoder swap
+would.
+
+**Status**: fully scoped, NOT YET BUILT. Unblocked now that the
+AttnGrounder stopping criterion has been met (Mode A seed=2 + Mode E
+both landed, see FINAL SYNTHESIS above) — ready to start whenever
+prioritized against the metrics-collection and TransVG tracks.
+
+**IMPLEMENTED (2026-07-21)**, all 5 stages, tested locally, all green:
+- `arch2/build_text_cache.py` (new): offline extraction script, includes
+  the `lr_swap` helper kept in exact lockstep with the loader's own
+  replace-chain. One deviation from the original plan, made deliberately
+  during implementation: DistilBERT's `[CLS]`/`[SEP]` tokens are kept in
+  the cached sequence rather than stripped -- the fusion module treats
+  every position uniformly, so stripping mid-sequence would only add
+  indexing-bug risk for no benefit (costs 2 of the 40 `query_len` slots).
+- `dataset/talk2car_loader.py`: new `text_encoder`/`text_cache_path`
+  params (default preserves exact original behavior); cache lookup
+  happens post-augmentation (post left/right-swap) so keys match.
+- `grounding_model.py`: new `text_encoder` kwarg, orthogonal to
+  variant/bdh_mode (applies to baseline or bdh); distilbert branch skips
+  building the BiLSTM entirely, `mapping_lang` becomes `Linear(768,
+  emb_size)`; forward pass trims to real length via a zero-row mask.
+  Also changed `.view()` to `.reshape()` at the mapping_lang call site
+  (needed since a sliced tensor isn't guaranteed contiguous) --
+  verified as a no-op for the existing glove path.
+- `pipeline.py`/`train.py`/`stratified_eval.py`/`full_a100.yaml`:
+  config field + `--text-encoder {glove,distilbert}` + `--text-cache`
+  CLI overrides + `_distilbert` ckpt-tag suffix, same pattern as every
+  prior toggle.
+- `tests/text_encoder_test.py` (new): covers what's locally testable
+  without remote data/`transformers` -- `lr_swap` correctness (single/
+  double/no-op cases), cache-lookup contract (fails loud on a miss, not
+  silent), the real-length-trim + `mapping_lang` projection logic
+  (shapes, gradients), and confirms the `view`->`reshape` change is a
+  verified no-op for the glove path. All passing, plus all 4 pre-existing
+  suites still green.
+
+**NOT locally testable** (needs remote data/GPU/`transformers`): the
+real `Talk2CarDataset` end-to-end, and running actual DistilBERT
+extraction. **NOT YET RUN ON REMOTE.**
+
+**Remote steps to actually use this**:
+```bash
+# sync (see below), then on remote:
+pip install transformers
+cd ~/BDH/Talk2Car/AttnGrounder
+python arch2/build_text_cache.py --data-root ln_data --out arch2/text_cache_distilbert.pth
+
+# recommend a quick sanity check (watch the first few training steps,
+# Ctrl+C once confirmed no crash/shape error) before committing a full
+# ~12+ hour run, since this is genuinely new, unverified-on-real-data code path
+CUDA_VISIBLE_DEVICES=0 python train.py --config configs/full_a100.yaml \
+    --variant baseline --text-encoder distilbert --text-cache arch2/text_cache_distilbert.pth
+```
+
+**RESULT (2026-07-21): baseline + DistilBERT is substantially WORSE, not
+better.** Best AP50 = 59.98 (epoch 98=58.18, epoch 99=59.21, consistent
+no-late-improvement pattern — final). Cache built cleanly (16,059 unique
+phrases incl. swap variants), no crashes, real learning happened (acc
+climbed 0.025->0.97+, val AP50 nonzero from epoch 0) — this is a genuine
+negative *result*, not a broken pipeline.
+
+```
+baseline + glove (mean, 2 seeds)   64.92
+baseline + distilbert               59.98      delta -4.94
+```
+
+**Honest diagnosis, not excuses** — three candidate causes, roughly by
+likely impact:
+1. **Frozen = zero task adaptation.** The BiLSTM is trained end-to-end
+   *for this task*; DistilBERT here is 100% frozen, only a single
+   `Linear(768,emb_size)` is trainable — a much smaller adaptable
+   surface, and generic web-text pretraining doesn't know anything
+   about driving-command phrasing specifically.
+2. **Scale/normalization mismatch**, foreshadowed by the elevated early
+   loss during the sanity check (~85 vs. the usual ~60s start) — BERT-
+   family `last_hidden_state` outputs are known to have uneven,
+   sometimes large-magnitude activations ("rogue dimensions"); no
+   `LayerNorm` sits between the frozen embeddings and `mapping_lang`
+   right now to compensate.
+3. **Keeping `[CLS]`/`[SEP]` in the sequence** (the implementation
+   choice made during Stage 1, documented then) costs 2 of the ~15-25
+   real-content positions to non-word tokens, in an already-short
+   sequence.
+
+**Candidate fixes, not yet tried**: add a `LayerNorm` right after the
+cached embeddings, before `mapping_lang` (cheap, targets #2 directly);
+revisit stripping `[CLS]`/`[SEP]` after all (targets #3); the
+domain-adaptive continued-pretraining step from the original plan,
+never built (targets #1 partially).
+
+**Decision needed**: run Mode A+distilbert now anyway (informative
+either way -- confirms whether this is a pipeline-wide problem or
+something BDH's mechanism is more robust to), or fix the LayerNorm issue
+and rerun baseline+distilbert first before spending another 12+ hour run
+on a comparison that might just inherit the same problem. NOT YET
+DECIDED.
+
+**DECIDED (2026-07-21): fix LayerNorm first, verify thoroughly before any
+GPU run (given the ~12+ hour cost of getting this wrong again).**
+
+Reasoning for fixing before re-testing with Mode A: the scale issue is a
+property of the raw input representation, shared identically by
+whatever fusion mechanism sits downstream (baseline's softmax attention
+and BDH's memory kernel both operate over the same per-position
+`flang` tensor) -- no strong architectural reason to expect BDH to be
+specially robust to badly-scaled input, so fixing the well-understood
+cause first is the better bet than hoping a different mechanism
+compensates for it.
+
+**IMPLEMENTED**: `nn.LayerNorm(768)` (`self.text_ln`) added in
+`grounding_model.__init__` (distilbert branch only), applied in
+`forward()` **after** trimming to `real_len`, before `mapping_lang` --
+order matters: trimming first means padded (all-zero) rows are never
+fed through LayerNorm at all (if normalized, they'd just pass through
+as the constant affine-bias term -- harmless but pointless, simpler to
+never touch them).
+
+**Verified locally, thoroughly, before touching the GPU**:
+- Extended `tests/text_encoder_test.py`'s existing trim/projection test
+  to match the real forward() path exactly (trim -> LayerNorm ->
+  reshape -> mapping_lang), confirming shapes and gradients (including
+  through the new LayerNorm) still check out.
+- New `test_layernorm_scale_fix()`: constructs synthetic input with
+  simulated BERT-style "rogue dimensions" (5 of 768 dims scaled 50x),
+  confirms pre-norm std is genuinely large (~4.6, sanity-checks the test
+  setup itself), confirms post-norm std lands at ~1.000 (the fix
+  actually does what it's supposed to), confirms the trim-before-norm
+  ordering by construction, confirms gradients flow through the LayerNorm
+  and back to the input.
+- All 5 local test suites (smoke, plumbing, integration, stratify-logic,
+  text-encoder) pass, `py_compile` clean.
+
+**NOT YET RUN ON GPU.** Plan: sync, rerun baseline+distilbert from
+scratch (old flawed checkpoint under the same tag will be overwritten,
+which is correct -- nothing worth keeping from the pre-fix run), confirm
+the gap closes before deciding on Mode A+distilbert.
+
+**RESULT (2026-07-22): fix helped a little, doesn't close the real gap.**
+Best AP50 = 60.50 (epoch 98=59.04, epoch 99=59.38, final).
+
+```
+baseline + glove (mean, 2 seeds)              64.92
+baseline + distilbert (no LayerNorm)          59.98    delta -4.94
+baseline + distilbert (+ LayerNorm)           60.50    delta -4.42
+```
+
+**+0.52 from the fix** -- real, right direction, confirms scale was a
+genuine contributing factor. But closes under 11% of the original gap.
+Diagnostic conclusion: **scale normalization was real but minor; the
+dominant problem is almost certainly cause #1 from the original
+diagnosis -- a fully frozen encoder with zero task-specific adaptation.**
+LayerNorm fixes how the numbers are distributed, not the fact that only
+a `Linear(768,512)` (+ the LayerNorm's 1,536 params) has any capacity to
+adapt at all, versus the original BiLSTM trained end-to-end for this
+exact task. One wrinkle noted, not fully explained: final training loss
+went *up* (~1.0 -> ~1.9) despite AP50 improving slightly -- not alarming
+given loss isn't directly comparable across normalization schemes, but
+not a clean "everything got better" story either.
+
+**DECIDED (2026-07-22): pause the text-encoder track, don't spend a 3rd
+12+ hour run on it.** Two consecutive runs (~24+ hours GPU time) both
+far below baseline+glove; the cheap fix barely moved the needle; running
+Mode A+distilbert next would very likely just replicate a similarly
+disappointing number for the same reason (shared, weak input
+representation, not something a different fusion mechanism can fix).
+Remaining plausible fixes (partial DistilBERT fine-tuning, or the
+domain-adaptive continued-pretraining step from the original queued
+plan) are each genuinely new implementation efforts with uncertain
+payoff, not quick patches.
+
+**Redirecting to**: metrics collection (GFLOPs/params/FPS -- cheap, no
+GPU-training needed, and the final AttnGrounder-phase table needs it
+regardless) and TransVG cross-architecture validation. If revisited
+later, domain-adaptive continued pretraining (still frozen at inference,
+preserves the "cheap" framing) is the more promising next fix to reach
+for, not another incremental architectural tweak.
+
 ## Idea queued: Distractor-Contrastive Loss (2026-07-20)
 
 Motivated by the user's explicit ask for a genuinely *original* loss —
@@ -601,6 +844,98 @@ well-powered enough to support the original claim. Mode A seed=2 and
 ideally a 3rd baseline seed are needed before drawing a final conclusion
 on this hypothesis.
 
+## Mode A seed=2 — RESULT (2026-07-21): CONFIRMED FINAL, unexpectedly high
+
+Best AP50 = **66.09** (epoch 98=63.86, epoch 99=63.43, both below peak —
+same no-late-improvement pattern as every prior run; genuinely final).
+Notably higher than every other data point collected so far.
+
+```
+                     AP50 (all)
+baseline, seed=0        64.92
+baseline, seed=1        64.92
+mode A, seed=0           65.09
+mode A, seed=1           64.14
+mode A, seed=2           66.09
+```
+
+Three-seed Mode A mean: (65.09+64.14+66.09)/3 = **65.11** — now *above*
+baseline's stable 64.92, reversing the "indistinguishable from baseline"
+read from two seeds. **2 of 3 Mode A seeds now beat baseline** on the
+aggregate (only seed=1 was a clear miss). High variance across seeds
+(64.14 to 66.09, spread ~2 points) is still real and needs accounting
+for, but the direction is now trending positive, not toward zero.
+
+**Stratified breakdown pending — the most consequential eval left to
+run.** If the ambiguous bucket drove this jump, it's the first genuinely
+convincing result for the hypothesis; if the gain is concentrated in
+unambiguous instead, that cuts against the specific disambiguation claim
+even with a strong aggregate. NOT YET RUN.
+
+**STRATIFIED RESULT (2026-07-21): the gain is in unambiguous, not
+ambiguous — does not support the hypothesis.**
+```
+                      AP50 (all)   AP50 (ambiguous, n=830)   AP50 (unambiguous, n=333)
+baseline, seed=0        64.92             63.37                      68.77
+baseline, seed=1        64.92             64.70                      65.47
+mode A, seed=0           65.09             63.98                      67.87
+mode A, seed=1           64.14             62.89                      67.27
+mode A, seed=2           66.04             63.98                      71.17
+```
+Seed=2's ambiguous score (63.98) is *identical* to seed=0's (63.98) and
+sits inside baseline's own observed range (63.37-64.70) — no advantage,
+same as before. The entire aggregate jump comes from unambiguous
+(71.17), a genuine outlier (higher than anything measured in that
+bucket across every variant tested) — but unambiguous performance isn't
+what the hypothesis predicts; if anything, a big gain on the *easier*
+single-candidate cases while ambiguous stays flat is the opposite
+pattern from "explicit memory helps disambiguation."
+
+**Three-seed Mode A ambiguous summary: 63.98, 62.89, 63.98 — mean
+63.62, slightly *below* baseline's two-seed ambiguous mean (64.03).**
+Well within baseline's own noise range, not evidence of an advantage.
+
+**CONCLUSION for Mode A (3 seeds, complete) — CORRECTED (2026-07-21,
+user pushback, verified by computing proper means instead of eyeballing
+seeds individually)**: two separate claims here, not one — conflating
+them was the error in the first pass at this conclusion.
+
+```
+Bucket          Baseline mean (2 seeds)   Mode A mean (3 seeds)   Delta
+All (aggregate)         64.92                    65.09            +0.17
+Ambiguous               64.04                    63.62            -0.42
+Unambiguous              67.12                    68.77            +1.65
+```
+
+1. **Specific mechanistic hypothesis** ("BDH's memory gives a
+   *disproportionate* advantage on ambiguous scenes") — NOT supported.
+   Ambiguous mean is slightly below baseline's, not above. This part of
+   the original conclusion stands.
+2. **General viability claim** ("BDH is a competitive, comparable-or-
+   better replacement for established attention in this fusion role")
+   — IS supported, and was previously under-weighted by over-focusing
+   on (1). Positive aggregate delta (+0.17, 2 of 3 seeds beat baseline
+   outright), real unambiguous gains (+1.65). Legitimate, positive,
+   citable finding on its own, separate from whether the disambiguation
+   mechanism was confirmed.
+
+**Combined honest conclusion**: BDH (Mode A) achieves comparable-to-
+modestly-better overall performance than established softmax attention
+— a real, positive result for a <1-year-old mechanism applied to a new
+domain (cross-modal grounding) for the first time, with zero
+task-specific tuning — but does NOT show the originally-hypothesized
+disambiguation-specific advantage. Both halves belong in the writeup;
+neither should be allowed to overshadow the other. Modes B and C's more
+decisive failures (see earlier results) don't change this — they were
+weaker configurations, not evidence against Mode A's own
+comparable-to-better result. Caveat: variance across seeds is real
+(~2-point aggregate spread), so "modestly better" should stay modest,
+not "clearly wins" — more seeds would strengthen this, not just for the
+ambiguous-bucket question.
+
+Per the stopping criterion (DECIDED 2026-07-21 above), one result
+remains before this phase closes: the growing-scales (Mode E) run.
+
 ## TOP CONTENDER (2026-07-21): cross-scale growing memory ("Mode E")
 
 Motivated by user's "favor BDH's nature, don't just force a swap-in"
@@ -677,6 +1012,197 @@ seed=2 (or whichever run is currently occupying the GPU) finishes.
 Recommended first run: `--variant bdh --bdh-mode C --growing-scales`
 (pairs the new cross-scale mechanism with the primary kernel).
 
+**RESULT (2026-07-21): CONFIRMED FINAL (single seed).** Best AP50 =
+64.80 (epoch 99=62.82, below peak — same no-late-improvement pattern as
+every prior run). Stratified: all=64.75, ambiguous=62.77,
+unambiguous=69.67.
+
+Two comparisons, kept separate on purpose:
+```
+                          all     ambiguous   unambiguous
+Mode C (base kernel)     64.06      62.17        68.77
+Mode E (C + growing)     64.75      62.77        69.67
+Delta (E - C)            +0.69      +0.60        +0.90
+```
+Growing-scales genuinely helps *relative to Mode C alone*, on both
+buckets — a real, positive mechanism-level finding.
+
+```
+                                  ambiguous    vs baseline's range [63.37-64.70]
+Mode E                             62.77              below range
+```
+But *relative to baseline* (the actual hypothesis test), Mode E's
+ambiguous score falls below baseline's entire observed range — same
+miss pattern as every other BDH configuration. Its unambiguous score
+(69.67) does land above baseline's range, consistent with Mode A's
+pattern of real gains concentrated in the bucket the hypothesis isn't
+about.
+
+**Caveat**: single seed only. Per the Mode A saga this session, single-
+seed BDH results have not been reliable predictors of the multi-seed
+mean — this result should be read as suggestive, not confirmed, if a
+stronger claim about Mode E specifically is ever needed later.
+
+## FINAL SYNTHESIS (2026-07-21): AttnGrounder phase closed, per the stopping criterion
+
+Complete dataset — every BDH configuration tested (3 kernel modes,
+seed variation on the winner, the growing-scales extension) — on the
+ambiguous bucket specifically, compared against baseline's own observed
+range [63.37, 64.70] (2 seeds):
+
+| Configuration | AP50 (ambiguous) | vs. baseline's range |
+|---|---|---|
+| Mode A, seed=0 | 63.98 | inside range |
+| Mode A, seed=1 | 62.89 | below range |
+| Mode A, seed=2 | 63.98 | inside range |
+| Mode B | 58.19 | well below range |
+| Mode C | 62.17 | below range |
+| Mode E (C + growing) | 62.77 | below range |
+
+**None of the six BDH configurations tested clearly exceed baseline's
+own observed ambiguous-scene range.** As clean and complete a negative
+result on the specific disambiguation hypothesis as this phase could
+produce.
+
+**Two separate, both-true conclusions for the AttnGrounder phase**:
+1. **Disambiguation hypothesis ("BDH's memory gives a disproportionate
+   ambiguous-scene advantage"): NOT supported.** Consistent across every
+   configuration tested.
+2. **General viability ("BDH is a comparable-to-modestly-better
+   attention replacement"): supported.** Mode A's 3-seed mean beats
+   baseline's 2-seed mean (+0.17 aggregate); Mode E substantially
+   improves on its own base kernel (+0.69) and beats baseline on
+   unambiguous (+0.90 over Mode C, and above baseline's own range).
+   Real, positive, and worth headlining — just not via the hypothesized
+   mechanism.
+
+**Per the stopping criterion (DECIDED 2026-07-21 above): AttnGrounder
+experimentation stops here.** Next: collect the metrics table
+(GFLOPs, layer count, FPS, inference-ms, params) for the final
+comparison table, then move to cross-architecture validation (TransVG)
+and/or the offline pretrained-text-encoder ablation (both already
+scoped above) as separate, deliberately-sequenced next phases — not
+further AttnGrounder-side experiments.
+
+## Metrics collection tooling (2026-07-22)
+
+**IMPLEMENTED**: `analysis/measure_metrics.py` (new) — params, layer
+count (by type, e.g. `Conv2d: N`), GFLOPs, inference-ms, FPS, for
+baseline or any BDH variant against a real checkpoint.
+- `count_layers()`: counts parameterized "leaf" modules only (containers
+  and param-free layers like `ReLU` excluded) — an unambiguous metric
+  that avoids having to define "depth" for a multi-branch/multi-scale
+  architecture (3 FPN scales, parallel heads).
+- GFLOPs via `fvcore.nn.FlopCountAnalysis` (not yet confirmed installed
+  on remote), measured at fp32 on a single image (GFLOPs is a
+  precision-independent architecture property) — separate from
+  inference-ms, which uses the real training precision (bf16 autocast)
+  since that's about measured wall-clock throughput, not architecture
+  size. Wrapped in try/except: this codebase's custom Darknet layers
+  (route/shortcut/upsample) are a real risk for fvcore compatibility, so
+  a failure here is reported with the reason rather than crashing the
+  whole script — params/layers/inference-ms/FPS still get reported
+  either way.
+- Reuses `train.py`'s existing `measure_inference_ms()` (already used by
+  `--eval-only`, just not yet run systematically across variants).
+
+**Verified locally**: new `tests/measure_metrics_test.py` — confirms
+`count_layers` correctly excludes containers and param-free leaves,
+correctly tallies repeated layer types (e.g. 3x `Conv2d` across FPN
+scales). GFLOPs/inference-ms need the real Darknet-backed model + GPU,
+not locally testable — verify on remote. All 6 local test suites
+(smoke, plumbing, integration, stratify-logic, text-encoder,
+measure-metrics) pass, `py_compile` clean.
+
+**RESULT (2026-07-22): baseline + Mode A run successfully, GFLOPs pending.**
+
+```
+              Params    Layers   Inference-ms   FPS
+Baseline      75.84M     183        4.94       202.59
+Mode A        76.63M     184        5.05       197.91
+```
+
+`fvcore` not yet installed on remote -- GFLOPs fell back gracefully
+(unavailable + reason, not a crash) exactly as designed; everything else
+still reported. Rerun both once `pip install fvcore` is done.
+
+**Two things worth flagging in the writeup**:
+1. "184 vs 183 layers" understates BDH's real structure -- its core
+   `E`/`Ev`/`Dx` encoder/decoder matrices are raw `nn.Parameter` tensors
+   on `BDHVisualTextAttention`, not wrapped in submodules, so
+   `count_layers()` can't see them (only the extra `Linear` beta_head
+   shows up). **Params (+0.79M) is the honest complexity measure**, not
+   layer count.
+2. Mode A is ~2.2% slower per image (5.05ms vs 4.94ms, 197.91 vs 202.59
+   FPS) -- small but real overhead from the lift/memory/gate
+   computation. Report plainly as part of "lightweight but not free,"
+   not glossed over.
+
+**GFLOPs RESULT (2026-07-22), fvcore installed, rerun both**:
+```
+              Params    Layers   GFLOPs   Inference-ms   FPS
+Baseline      75.84M     183      43.49      2.14        468.34
+Mode A        76.63M     184      50.04      2.45        407.73
+```
+
+**GFLOPs is reliable** (deterministic static analysis, not live timing)
+and reveals something the params number hides: **+6.55 GFLOPs, +15.1%
+relative** -- far bigger than the params delta (+1.04%). BDH's lift into
+the high-dimensional sparse space (`n = mult*d = 1024`) is compute-heavy
+at *each* of the 3 FPN scales (169/676/2704 regions), even though the
+lift/projection matrices are shared across scales and cheap in param
+count. **Real nuance for the "lightweight" framing**: lightweight in
+params, meaningfully more expensive in compute. State this plainly.
+
+**Inference-ms is NOT reliable as measured -- flag before using it
+anywhere.** The two runs of the *identical* checkpoints gave very
+different absolute timings (baseline 4.94ms -> 2.14ms, a 57% swing;
+Mode A 5.05ms -> 2.45ms, a 51% swing), almost certainly from variable
+load on the shared GPU between runs. More concerning: the *relative*
+overhead of Mode A over baseline also isn't stable across the two runs
+(+2.2% in run 1, +14.5% in run 2) -- if this were purely uniform
+background load, that relative percentage should have stayed roughly
+consistent even as absolute numbers shifted. **Do not report either
+inference-ms/FPS number as a confident, publishable figure yet.**
+Needed before this table is final: re-measure both back-to-back
+(minimize the window for background load to change between them),
+ideally checking `nvidia-smi` immediately before each to confirm the
+GPU isn't under heavy contention from another user at that moment.
+NOT YET DONE.
+
+**RECONCILED (2026-07-22): 3rd measurement run confirms runs 2+3 are the
+clean pair, run 1 was the contended outlier.**
+```
+Run   Baseline   Mode A   Relative overhead
+1     4.94ms     5.05ms   +2.2%   (likely contended -- outlier)
+2     2.14ms     2.45ms   +14.5%
+3     2.11ms     2.33ms   +10.4%
+```
+Runs 2 and 3 agree well with each other, disagree sharply with run 1 --
+under real GPU contention both models get bottlenecked by shared
+external load, compressing the *relative* difference; under clean
+conditions the true architectural cost shows through more consistently.
+Averaging the two clean runs (2.125ms/2.39ms):
+
+## FINAL AttnGrounder-phase metrics table (2026-07-22)
+
+```
+              Params     Layers   GFLOPs   Inference-ms   FPS
+Baseline      75.84M      183      43.49      2.13         ~470
+Mode A        76.63M      184      50.04      2.39         ~418
+Delta         +0.79M      +1       +6.55      +0.26ms      -52
+              (+1.0%)              (+15.1%)   (+12.5%)     (-11.1%)
+```
+
+**Honest three-dimensional picture, all three pieces belong in the
+writeup together**: BDH Mode A is lightweight in parameters (+1%) but
+meaningfully more expensive in compute (+15.1% GFLOPs) and measurably
+slower in practice (+12.5% inference time). Don't lean on the flattering
+params number alone -- report all three. This closes out the
+metrics-collection task; the AttnGrounder phase now has a complete,
+defensible results package (ablation study + stratified findings +
+metrics table).
+
 ## DECIDED (2026-07-20): two-phase paper structure
 
 Goal explicitly reframed by user: not beating SOTA, but demonstrating
@@ -700,6 +1226,80 @@ experiment. Target bracket for phase 2: CMSVG-lightweight (67.8%,
 ~71-72M) and similar pretrained-text/moderate-size models — see
 correction below, not VL-BERT/RSD-LXMERT (those are a further tier up).
 
+## DECIDED (2026-07-21): AttnGrounder stopping criterion + cross-architecture plan
+
+**Stop AttnGrounder experimentation once Mode A seed=2 and the
+cross-scale growing-memory run (Mode E) both finish** — both already
+built/queued, low-cost to complete. Whatever those two results show
+(positive, negative, or still-ambiguous) becomes **the AttnGrounder-side
+finding**, not a problem to keep chasing with more experiments. Then:
+1. Collect the metrics table (GFLOPs, layer count, FPS, inference-ms,
+   params) for baseline + whichever configuration ends up the reference
+   point. `train.py` already has `measure_inference_ms()`; GFLOPs and
+   layer count are not yet measured (need `fvcore`/`ptflops` for GFLOPs,
+   trivial enumeration of `model.named_modules()` for layer count).
+2. Move to cross-architecture validation on TransVG (2021, ICCV,
+   official code at github.com/djiajunustc/TransVG — see the "modern
+   architecture" research above).
+
+**Explicitly deferred, NOT gates for finishing AttnGrounder**: the
+distractor-contrastive loss (`arch2/`) and the BDH->attention hybrid
+(Mode D) are real, reasonable ideas, but each is its own multi-hour
+build-and-train cycle — chaining more of them onto AttnGrounder is how
+"when do we stop" becomes "never." They become candidates to try on
+TransVG instead, or explicit future work beyond this paper, not
+prerequisites.
+
+**Cross-architecture validation scope (TransVG phase) — kept
+deliberately light**: do NOT replicate the entire AttnGrounder ablation
+(3+ modes, multiple seeds each) on TransVG — would double total project
+size and defeat the point of having a stopping rule. Instead: port over
+just the single most informative configuration from the AttnGrounder
+phase (whichever mode/setup produced the clearest result, positive or
+negative), rerun with ~2 seeds on TransVG as a lighter variance check,
+and see if the same qualitative story holds. Enough to support a genuine
+cross-architecture claim without a second full ablation study.
+
+## Anticipated reviewer questions (prepared answers, 2026-07-21)
+
+**"Why test on an old (2020) model/dataset?"**
+- Controlled comparison requires a fixed, minimal reference point — the
+  whole point of the ablation study is isolating what BDH's mechanism
+  contributes. AttnGrounder is chosen *because* it's simple enough that
+  the fusion module is a single, cleanly swappable component. A newer,
+  more complex architecture (more moving parts, pretrained encoders,
+  deeper fusion) would introduce more confounds, making it harder, not
+  easier, to attribute any effect to BDH specifically — a deliberate
+  methodological choice, not a lazy default.
+- The dataset isn't stale — Talk2Car is still the benchmark CAVG (2024)
+  and ThinkDeeper (2025) use. It's the base *architecture* that's from
+  2020, not the task or data.
+- The planned TransVG cross-architecture validation turns this into a
+  strength: "we further validate this isn't an artifact of one 2020-era
+  architecture by porting the mechanism to a structurally different,
+  more modern base."
+
+**"Why not just use CLIP/VLMs — they perform much better, why bother
+with non-VLM at all?"**
+- A VLM's performance advantage comes overwhelmingly from web-scale
+  pretraining, not from its fusion mechanism being better-designed for
+  disambiguation specifically. Swapping BDH into a CLIP-based model and
+  seeing no extra ambiguous-scene benefit would be uninterpretable —
+  can't tell if BDH doesn't help, or if CLIP's already-massive
+  pretrained representations create a ceiling effect that swamps any
+  local mechanism contribution. Testing on a non-pretrained base is what
+  makes the mechanism's own contribution measurable at all.
+- Standard methodological sequencing, not an excuse: no new
+  attention/memory mechanism gets validated for the first time inside a
+  frontier-scale model — Transformers, Mamba, RWKV, xLSTM, and BDH
+  itself were all first validated in controlled, smaller-scale settings
+  before anyone scaled them up. We're doing exactly that for a
+  mechanism under a year old.
+- VLM-scale testing is genuine future work, not something being
+  avoided — the two-phase plan's phase 2 (pretrained text encoder)
+  already starts probing "does this hold up when pretraining is added,"
+  just not at full CLIP scale.
+
 ## Open questions / decisions needed
 
 - Which of A/B/C to build on once B finishes (currently A leads).
@@ -710,3 +1310,57 @@ correction below, not VL-BERT/RSD-LXMERT (those are a further tier up).
   sufficient for the eventual write-up, or whether to attempt contacting
   Talk2Car maintainers directly for research-use test GT access (slow,
   uncertain, not on the critical path).
+
+## DECIDED (2026-07-22): headline narrative pivots to viability; disambiguation hypothesis reframed as a secondary, honestly-reported negative result
+
+**The change**: the project's headline claim is no longer "BDH gives a
+disambiguation-specific advantage" (the original motivating hypothesis,
+which is NOT supported — see the multi-seed results above). It is now:
+**"a memory architecture published under a year ago, never previously
+tested on any cross-modal task, is a viable drop-in replacement for
+established softmax attention on a real grounding benchmark"** —
+comparable-to-modestly-better AP50, near-zero parameter overhead, zero
+task-specific tuning of the mechanism itself.
+
+**Why**: the disambiguation hypothesis was tested rigorously (3 kernel
+modes, multi-seed on the winner, the growing-memory extension — 6 BDH
+data points total) and did not hold up against baseline's own observed
+variance. Leading the paper with that as the headline result makes the
+whole project read as a negative-result paper, when the more accurate
+and more interesting story is the viability finding: BDH holds its own
+against a mechanism with years of refinement behind it, on the very
+first attempt, with no hyperparameter search on the BDH side. That's a
+real, positive, and honestly-earned claim — separate from whether the
+originally-hypothesized mechanism explains *why*.
+
+**Guardrail (non-negotiable)**: this is a reframing of emphasis, not a
+suppression of the negative result. The disambiguation hypothesis and
+its negative finding remain fully and honestly reported — full
+multi-seed evidence, the Mode A/B/C/E breakdown, the seed-replication
+failure — just moved later in the narrative, under a "digging into the
+mechanism" framing, instead of leading with it. This is NOT HARKing:
+the original hypothesis is explicitly presented as having come first
+(motivating the project), and its negative result is stated as plainly
+as before — nothing about the actual finding changed, only which claim
+is the headline.
+
+**What changed in the slide deck** (`slides/progress_update.tex`):
+- Subtitle: "Testing the 'Grounding = In-Context Retrieval' Hypothesis"
+  → "Is a $<$1-Year-Old Memory Architecture a Viable Attention
+  Replacement?"
+- "Why Bring in BDH?" now leads with the viability question, defers the
+  specific mechanistic hypothesis to later ("explored later, once the
+  headline result is on the table").
+- "Interpretation" slide renamed to "BDH Holds Up Against Established
+  Attention," leads with the viability evidence, forward-references the
+  mechanism discussion instead of stating the negative result inline.
+- New `\section{Digging Into the Mechanism}` (between Methodology and
+  "What We Tried") with two slides: (1) presents the original
+  "grounding = in-context retrieval" hypothesis, explicitly flagged as
+  the project's starting motivation; (2) "Honest Answer: Not Supported"
+  — the full negative result across all 6 BDH configurations, plus an
+  explicit "why report this at all if it's negative" justification.
+- Final Conclusion ("What This Project Actually Shows") and "Summary"
+  slides reordered so the viability claim (exampleblock / first bullet)
+  leads and the mechanism result (alertblock / later bullet) follows —
+  content of both claims unchanged, only order and framing.

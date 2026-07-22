@@ -50,6 +50,8 @@ def config_to_args(cfg):
     a.bdh_dropout = bdh.get("dropout", 0.1)
     a.bdh_share_qv_encoder = bdh.get("share_qv_encoder", False)
     a.bdh_growing_scales = bdh.get("growing_scales", False)
+    a.text_encoder = cfg["model"].get("text_encoder", "glove")   # "glove" | "distilbert"
+    a.text_cache_path = cfg["model"].get("text_cache_path", None)
     a.fusion_streams = cfg["model"].get("fusion", {}).get("streams", ["fvisu", "flang_attn"])
     a.lambda_map = cfg["model"].get("lambda_map", 0.1)
     ml = cfg["model"].get("map_loss", {})

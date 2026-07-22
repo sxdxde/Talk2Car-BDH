@@ -52,7 +52,8 @@ def stratify(hits_by_img, scene_index):
     return {k: (ap50(v), len(v)) for k, v in buckets.items()}
 
 
-def run(config, resume, scene_index_path, variant=None, bdh_mode=None, growing_scales=False):
+def run(config, resume, scene_index_path, variant=None, bdh_mode=None, growing_scales=False,
+        text_encoder=None, text_cache_path=None):
     import torch
     from torch.utils.data import DataLoader
     from torchvision.transforms import Compose, ToTensor, Normalize
@@ -70,6 +71,12 @@ def run(config, resume, scene_index_path, variant=None, bdh_mode=None, growing_s
         args.bdh_mode = bdh_mode
     if growing_scales:
         args.bdh_growing_scales = True
+    if text_encoder:
+        args.text_encoder = text_encoder
+    if text_cache_path:
+        args.text_cache_path = text_cache_path
+    if args.text_encoder == "distilbert" and not args.text_cache_path:
+        raise ValueError("--text-encoder distilbert requires --text-cache (or model.text_cache_path in the config)")
     device = P.resolve_device(args.device)
     anchors_full = P.anchors_full_from_list(args.anchors)
     scene_index = json.load(open(scene_index_path))
@@ -77,7 +84,8 @@ def run(config, resume, scene_index_path, variant=None, bdh_mode=None, growing_s
     tf = Compose([ToTensor(), Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])])
     # FULL val set (no subset), deterministic order so global index -> img_file
     val_ds = Talk2CarDataset(data_root=args.data_root, split=args.eval_split, imsize=args.size,
-                             transform=tf, max_query_len=args.time)
+                             transform=tf, max_query_len=args.time,
+                             text_encoder=args.text_encoder, text_cache_path=args.text_cache_path)
     loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, drop_last=False,
                         num_workers=8, pin_memory=(device.type == "cuda"))
 
@@ -126,5 +134,10 @@ if __name__ == "__main__":
                     help="override model.bdh.mode from the config (must match --resume checkpoint)")
     ap.add_argument("--growing-scales", action="store_true",
                     help="override model.bdh.growing_scales to True (must match --resume checkpoint)")
+    ap.add_argument("--text-encoder", default=None, choices=["glove", "distilbert"],
+                    help="override model.text_encoder (must match --resume checkpoint)")
+    ap.add_argument("--text-cache", default=None,
+                    help="override model.text_cache_path (required with --text-encoder distilbert)")
     a = ap.parse_args()
-    run(a.config, a.resume, a.scene_index, a.variant, a.bdh_mode, a.growing_scales)
+    run(a.config, a.resume, a.scene_index, a.variant, a.bdh_mode, a.growing_scales,
+        a.text_encoder, a.text_cache)

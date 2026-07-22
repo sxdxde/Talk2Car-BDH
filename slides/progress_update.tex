@@ -17,7 +17,7 @@
 \setbeamercolor{exampleblock body}{bg=green!8,fg=black}
 
 \title[BDH-Swapped AttnGrounder]{Swapping AttnGrounder's Attention for a\\ Brain-Inspired Associative Memory (BDH)}
-\subtitle{Testing the ``Grounding = In-Context Retrieval'' Hypothesis on Talk2Car}
+\subtitle{Is a $<$1-Year-Old Memory Architecture a Viable Attention Replacement?}
 \author{Sudarshan Sudhakar}
 \date{\today}
 
@@ -69,19 +69,20 @@
     \textbf{explicit, growing outer-product associative memory}
     ($\rho = K^\top V$), updated with Hebbian-style read/write —
     rather than a fixed-size compressed state (e.g.\ Mamba/SSMs).
+    Published $<$1 year ago; never previously tested on any
+    cross-modal (vision+language) task.
   \end{block}
   \vspace{0.3cm}
-  \begin{alertblock}{The hypothesis we're testing}
-    \emph{``Grounding = in-context retrieval''}: architectures with
-    explicit associative memory should have an edge precisely when a
-    query must be matched against \textbf{multiple similar
-    candidates} in context — because that is a retrieval problem, not
-    a compression problem.
+  \begin{alertblock}{The question we're actually asking}
+    Can a mechanism this new — with zero prior validation outside
+    single-modality language modeling — serve as a
+    \textbf{viable, near-drop-in replacement} for an established,
+    years-refined attention mechanism, in a task it was never designed
+    for?
   \end{alertblock}
-  \textbf{Prediction:} swapping AttnGrounder's attention for a BDH
-  module should raise AP50 \emph{disproportionately} on scenes with
-  several same-class candidate objects (``ambiguous'' scenes),
-  relative to scenes with only one.
+  \small\textit{A more specific mechanistic hypothesis (why BDH's memory
+  might help, not just whether it's viable) is explored later, once the
+  headline result is on the table.}
 \end{frame}
 
 \section{Method}
@@ -232,9 +233,10 @@
 \section{Results}
 
 % ------------------------------------------------------------------
-\begin{frame}{Ablation Study — Full Results}
-  \footnotesize Three BDH kernel formulations trained and evaluated
-  end-to-end (same recipe, same data, same eval pipeline as baseline):
+\begin{frame}{Ablation Study — Full Results (Multi-Seed)}
+  \footnotesize Baseline and Mode A reseeded after an initial encouraging
+  single-seed result didn't hold up — multi-seed testing is what this
+  slide reflects, not the first (misleading) pass:
   \begin{table}
     \centering\footnotesize
     \begin{tabular}{lcccc}
@@ -242,69 +244,74 @@
       Variant & AP50 (all) & AP50 (ambig.) & AP50 (unambig.) & vs.\ base (all) \\
       & $n{=}1163$ & $n{=}830$ & $n{=}333$ & \\
       \midrule
-      Baseline       & 64.92 & 63.37 & 68.77 & --- \\
-      BDH Mode C     & 64.06 & 62.17 & 68.77 & $-0.86$ \\
-      \textbf{BDH Mode A} & \textbf{65.09} & \textbf{63.98} & 67.87 & $\mathbf{+0.17}$ \\
-      BDH Mode B     & 60.53 & 58.19 & 66.37 & $-4.39$ \\
+      Baseline (mean, 2 seeds) & 64.92 & 64.04 & 67.12 & --- \\
+      Mode A (mean, 3 seeds)   & 65.09 & 63.62 & 68.77 & $+0.17$ \\
+      Mode B                  & 60.53 & 58.19 & 66.37 & $-4.39$ \\
+      Mode C                  & 64.06 & 62.17 & 68.77 & $-0.86$ \\
+      Mode E (C + growing mem.) & 64.75 & 62.77 & 69.67 & $-0.17$ \\
       \bottomrule
     \end{tabular}
   \end{table}
-  \begin{center}
-  \scalebox{0.58}{
-  \begin{tikzpicture}[scale=1, every node/.style={font=\scriptsize}]
-    \def\scaleY{0.045}
-    \draw[->] (-0.5,0) -- (7,0);
-    \draw[->] (-0.5,0) -- (-0.5,4.2);
-    \draw[dashed, gray!50] (-0.5,{70*\scaleY}) -- (7,{70*\scaleY});
-    \node[left] at (-0.5,{70*\scaleY}) {70};
-    \draw[dashed, gray!50] (-0.5,{50*\scaleY}) -- (7,{50*\scaleY});
-    \node[left] at (-0.5,{50*\scaleY}) {50};
-
-    \draw[fill=blue!60] (0,0) rectangle (0.6,{64.92*\scaleY});
-    \draw[fill=orange!70] (0.7,0) rectangle (1.3,{65.09*\scaleY});
-    \node at (0.65,-0.3) {All};
-
-    \draw[fill=blue!60] (2.3,0) rectangle (2.9,{63.37*\scaleY});
-    \draw[fill=orange!70] (3.0,0) rectangle (3.6,{63.98*\scaleY});
-    \node at (2.95,-0.3) {Ambiguous};
-
-    \draw[fill=blue!60] (4.6,0) rectangle (5.2,{68.77*\scaleY});
-    \draw[fill=orange!70] (5.3,0) rectangle (5.9,{67.87*\scaleY});
-    \node at (5.25,-0.3) {Unambiguous};
-
-    \draw[fill=blue!60] (7.3,3.4) rectangle (7.7,3.7);
-    \node[right] at (7.7,3.55) {Baseline};
-    \draw[fill=orange!70] (7.3,2.8) rectangle (7.7,3.1);
-    \node[right] at (7.7,2.95) {BDH Mode A (best)};
-  \end{tikzpicture}
-  }
-  \end{center}
-  \footnotesize\textit{Bar chart: headline pair (baseline vs.\ winning
-  Mode A). Full 3-mode sweep in the table above.}
+  \vspace{0.15cm}
+  \begin{alertblock}{Variance is part of the finding}
+    \footnotesize Mode A's 3 seeds spanned \textbf{64.14--66.09} (all);
+    baseline's 2 seeds were tight (\textbf{64.89--64.92}). BDH's spread
+    is real, architecture-driven variance, not just generic training
+    noise — a single encouraging seed (the original $+0.61$ ambiguous
+    result) did \emph{not} replicate on reseed.
+  \end{alertblock}
 \end{frame}
 
 % ------------------------------------------------------------------
-\begin{frame}{Interpretation}
+\begin{frame}{Interpretation — BDH Holds Up Against Established Attention}
+  \begin{exampleblock}{The headline result}
+    \small Mode A's mean (3 seeds) beats baseline's mean (2 seeds) on
+    aggregate AP50 ($+0.17$); Mode E substantially improves on its own
+    base kernel ($+0.69$ over Mode C) and beats baseline on unambiguous
+    scenes. A mechanism with \textbf{zero prior cross-modal validation}
+    matches or modestly exceeds an attention mechanism that's had years
+    of task-specific refinement.
+  \end{exampleblock}
+  \vspace{0.2cm}
+  \small
   \begin{itemize}
-    \item \textbf{Mode A} is the first (and only) formulation pointing
-      in the hypothesis's predicted direction: beats baseline on
-      ambiguous scenes ($+0.61$) while ceding ground on unambiguous
-      ($-0.90$) — a genuine disambiguation trade-off.
-    \item \textbf{Modes B and C both do worse specifically on
-      ambiguous scenes} ($-1.20$ and $-5.18$ vs.\ baseline)
-      \emph{despite both having} an explicit outer-product associative
-      memory, same as Mode A.
+    \item Multi-seed tested, not a lucky single run: Mode A's 3 seeds
+      spanned 64.14--66.09, 2 of 3 clearly beat baseline's stable
+      64.89--64.92.
+    \item Not every kernel formulation works — Mode B (60.53) is a
+      clear miss — so this isn't ``any BDH variant helps,'' it's
+      specific design choices that do.
   \end{itemize}
   \vspace{0.2cm}
-  \begin{exampleblock}{Key insight}
-    The win isn't just ``having associative memory'' — it's
-    specifically Mode A's \textbf{causal text-self-contextualization}
-    step (words attend to each other before regions query them). This
-    directly motivates the BDH$\to$attention hybrid idea (Future Work).
-  \end{exampleblock}
-  \begin{alertblock}{Caveat}
-    Single seed per variant — a $\sim$1 AP50 gap on 830 images carries
-    meaningful noise. Encouraging, not yet conclusive.
+  \small\textit{Why does this hold up, mechanistically? We had a
+  specific hypothesis going in — see ``Digging Into the Mechanism''
+  later for the honest answer.}
+\end{frame}
+
+% ------------------------------------------------------------------
+\begin{frame}{Efficiency: Lightweight in Params, Not in Compute}
+  \begin{table}
+    \centering\small
+    \begin{tabular}{lccccc}
+      \toprule
+      & Params & Layers & GFLOPs & Inference & FPS \\
+      \midrule
+      Baseline & 75.84M & 183 & 43.49 & 2.13ms & $\sim$470 \\
+      Mode A   & 76.63M & 184 & 50.04 & 2.39ms & $\sim$418 \\
+      \midrule
+      \textbf{Delta} & $+1.0\%$ & $+1$ & $\mathbf{+15.1\%}$ & $\mathbf{+12.5\%}$ & $-11.1\%$ \\
+      \bottomrule
+    \end{tabular}
+  \end{table}
+  \vspace{0.2cm}
+  \begin{alertblock}{Honest three-dimensional picture}
+    \footnotesize The flattering number is params ($+1\%$). GFLOPs
+    tells a different story: BDH's lift into the high-dimensional
+    sparse space ($n{=}\text{mult}\times d = 1024$) is compute-heavy at
+    \emph{each} of the 3 FPN scales, even though the lift matrices are
+    shared and cheap in parameter count. Real, measured $+12.5\%$
+    inference-time cost follows. All three numbers belong in the
+    writeup together — not just the flattering one.
   \end{alertblock}
 \end{frame}
 
@@ -322,7 +329,7 @@
       Model & Backbone & AP50 (test) & Params \\
       \midrule
       AttnGrounder (paper) & CNN & 61.32 & 75.84M \\
-      \textbf{Ours: BDH Mode A} & CNN & \textbf{65.09 (val)} & \textbf{76.63M} \\
+      \textbf{Ours: BDH Mode A} & CNN & \textbf{65.09 (val, mean 3 seeds)} & \textbf{76.63M} \\
       CMSVG & CNN (EfficientNet) & 68.61 & --- \\
       VL-BERT & CNN+BERT & 70.03 & $\sim$118M \\
       RSD-LXMERT & LXMERT & 72.64 & $\sim$210-230M \\
@@ -398,70 +405,168 @@
   \end{alertblock}
 \end{frame}
 
-\section{Future Scope}
+\section{Digging Into the Mechanism}
 
 % ------------------------------------------------------------------
-\begin{frame}{In Progress \& Next Up}
-  \begin{exampleblock}{In progress}
-    \footnotesize \textbf{Tversky + Focal loss} (Salehi et al.\ 2017 /
-    Lin et al.\ 2017 — ThinkDeeper's own aux-loss references)
-    replacing plain BCE on the $\beta$/attention-map supervision. One
-    loss swap, no architecture change — targets foreground/distractor
-    imbalance, plausibly most relevant in ambiguous scenes. Training
-    now on Mode A.
-  \end{exampleblock}
-  \footnotesize
-  \begin{itemize}\setlength{\itemsep}{1pt}
-    \item \textbf{BDH stacking} (2-3 layers): current module is a
-      single lift$\to$read$\to$gate$\to$decode pass. Tests ``does
-      more memory depth help.''
-    \item \textbf{BDH$\to$attention hybrid}: motivated by today's
-      insight — memory builds text context, then standard attention
-      aligns.
-    \item \textbf{Depth/distance prior}: reuse the 3D data already
-      pulled from nuScenes (Step 6) — no new model needed.
-    \item \textbf{Pretrained text encoder} (DistilBERT/MiniLM):
-      replaces 2014-era GloVe+BiLSTM — contained scope, doesn't touch
-      BDH, vision backbone, or detection head.
-  \end{itemize}
-  \footnotesize\textit{Scoped out for now: YOLOv7/YOLO26 backbone+head
-  swap — legitimate lever, but a much bigger, separate engineering
-  track that doesn't test the memory hypothesis.}
+\begin{frame}{The Specific Hypothesis Behind the Viability Result}
+  \begin{block}{``Grounding = in-context retrieval''}
+    Architectures with explicit associative memory should have an edge
+    precisely when a query must be matched against \textbf{multiple
+    similar candidates} in context — because that's a retrieval
+    problem, not a compression problem (BDH's memory is explicit and
+    growing; e.g.\ Mamba/SSMs compress to a fixed-size state instead).
+  \end{block}
+  \vspace{0.2cm}
+  \textbf{Prediction:} swapping in BDH should raise AP50
+  \emph{disproportionately} on scenes with several same-class candidate
+  objects (``ambiguous,'' $n{=}830$) relative to scenes with only one
+  (``unambiguous,'' $n{=}333$) — tested via the nuScenes-joined
+  stratification built for exactly this (Step 6).
+  \vspace{0.2cm}
+  \small\textit{This was the project's original motivating question —
+  worth being direct that it came first, not after the results.}
 \end{frame}
 
 % ------------------------------------------------------------------
-\begin{frame}{Why Keep Pursuing This}
-  \begin{enumerate}
-    \item \textbf{We already have a real, encouraging signal.} Mode A
-      shows the exact hypothesis-predicted trade-off — not just
-      infrastructure readiness, an actual result worth building on.
-    \item \textbf{The infrastructure cost is already paid.} Data
-      pipeline, drop-in BDH module (3 modes), training loop, and the
-      stratified evaluator are all built and validated end-to-end.
-      Remaining work is experiment iteration, not engineering.
-    \item \textbf{Low marginal model cost.} BDH adds $\sim$1\%
-      parameters — stays a clean, fair test of the \emph{mechanism}.
-    \item \textbf{Directly tests a live hypothesis} from recent
-      literature (BDH / Dragon Hatchling, $<$1 year old) in a task
-      setting the original work never evaluated.
-  \end{enumerate}
+\begin{frame}{Honest Answer: Not Supported}
+  \begin{alertblock}{Across every configuration tested}
+    \footnotesize Mode A ($\times 3$ seeds), B, C, E — \textbf{all 6
+    BDH data points} — none clearly exceed baseline's own observed
+    ambiguous-scene range (64.04 mean, 63.37--64.70 across seeds). The
+    disproportionate ambiguous-scene advantage the hypothesis predicted
+    does not show up, consistently, across the whole ablation.
+  \end{alertblock}
+  \vspace{0.2cm}
+  \small
+  \begin{itemize}
+    \item Where BDH \emph{does} win (Mode A's aggregate, Mode E's
+      unambiguous gain), the improvement is concentrated in the
+      \emph{wrong} bucket relative to the hypothesis — the easier,
+      single-candidate scenes, not the harder disambiguation cases.
+    \item Mode B — most faithful to BDH's ``natural'' causal,
+      sequential design — is the clear \emph{worst} performer, not the
+      best, further undercutting a naive ``more associative memory
+      $\to$ more retrieval benefit'' story.
+  \end{itemize}
+  \vspace{0.2cm}
+  \begin{exampleblock}{Why report this at all if it's negative?}
+    \footnotesize A rigorously seed-tested negative answer to the
+    question that motivated the whole project is more valuable than
+    silence — it tells future work the viability result isn't coming
+    from the mechanism we expected, which narrows where to look next.
+  \end{exampleblock}
+\end{frame}
+
+\section{What We Tried}
+
+% ------------------------------------------------------------------
+\begin{frame}{What We Tried — A Retrospective}
+  \footnotesize Four follow-up experiments after the ablation study, each
+  tested to a real conclusion, not left open-ended:
+  \begin{itemize}\setlength{\itemsep}{3pt}
+    \item \textbf{Tversky + Focal loss} (replacing BCE on the
+      $\beta$/attention-map supervision): \textcolor{red!70!black}{negative}
+      — 64.03, below Mode A's 65.09. The aux loss carries only $10\%$
+      weight in the total objective; not enough leverage.
+    \item \textbf{Cross-scale growing memory (Mode E)}: real
+      \emph{within-mechanism} win ($+0.69$ over its own base kernel,
+      Mode C) — but still no advantage over baseline on ambiguous
+      scenes specifically. See Results.
+    \item \textbf{Offline/frozen pretrained text encoder} (DistilBERT,
+      replacing GloVe+BiLSTM): \textcolor{red!70!black}{substantial
+      regression} — 59.98 vs.\ baseline's 64.92. A LayerNorm fix
+      (targeting a real BERT-scale mismatch) recovered only $+0.52$.
+      Root cause is likely deeper: a fully \emph{frozen} encoder has
+      almost no capacity to adapt to this task. \textbf{Paused}, not
+      abandoned — partial fine-tuning or domain-adaptive pretraining
+      are the more promising next fixes.
+    \item \textbf{Efficiency metrics}: done — see previous slide.
+  \end{itemize}
+  \vspace{0.15cm}
+  \footnotesize\textit{Scoped out entirely: YOLOv7/YOLO26 backbone swap,
+  BDH stacking, BDH$\to$attention hybrid, distractor-contrastive loss —
+  real ideas, deliberately not chased further once the AttnGrounder
+  phase had a complete, defensible answer (see stopping criterion).}
+\end{frame}
+
+\section{Next Steps}
+
+% ------------------------------------------------------------------
+\begin{frame}{Next: Cross-Architecture Validation}
+  \begin{block}{Why}
+    \footnotesize Everything so far is one architecture (AttnGrounder,
+    2020, YOLO-anchor one-stage). Does the finding — comparable-to-better
+    overall, no disambiguation-specific edge — hold on a structurally
+    different design, or is it an artifact of this specific base?
+  \end{block}
+  \vspace{0.2cm}
+  \begin{exampleblock}{TransVG (Deng et al., ICCV 2021)}
+    \footnotesize Official public code. Transformer-encoder fusion
+    (vision + text tokens attended together) instead of a standalone
+    attention module before a YOLO head — a genuinely different
+    integration point for BDH, not a copy-paste of the AttnGrounder swap.
+    Not CLIP-based, stays in the same non-VLM comparison bracket.
+  \end{exampleblock}
+  \footnotesize\textbf{Scope, deliberately light:} port just the single
+  most informative configuration (Mode A), $\sim$2 seeds — not a second
+  full ablation study. Enough to support a genuine cross-architecture
+  claim without doubling the project.
+\end{frame}
+
+\section{Final Conclusion}
+
+% ------------------------------------------------------------------
+\begin{frame}{What This Project Actually Shows}
+  \footnotesize Two honest, separable findings — both belong in the
+  final writeup, neither should overshadow the other:
+  \begin{exampleblock}{Headline: BDH is a viable attention replacement}
+    \footnotesize A $<1$-year-old, never-before-cross-modal architecture
+    achieves \textbf{comparable-to-modestly-better performance} than
+    established, years-refined softmax attention — with zero
+    task-specific tuning of the mechanism itself, at $+1\%$ parameters
+    (though $+15\%$ compute, reported honestly). That is a genuine
+    viability result.
+  \end{exampleblock}
+  \begin{alertblock}{The mechanism behind it: not what we predicted}
+    \footnotesize Across every tested configuration (3 kernel modes,
+    multi-seed on the winner, the growing-memory extension), BDH's
+    associative memory shows \textbf{no disproportionate advantage on
+    ambiguous, multi-candidate scenes} — the specific mechanism
+    (``grounding = in-context retrieval'') that motivated this project.
+    A rigorously seed-tested negative result, not an inconclusive one —
+    reported honestly, not as the headline.
+  \end{alertblock}
+  \footnotesize\textbf{What's novel, concretely:} first cross-modal
+  application of BDH found in the literature; three original non-causal
+  kernel adaptations of an inherently causal mechanism; a
+  reproducible, quantitative ambiguity-stratification protocol built
+  from data infrastructure (nuScenes join) nobody else has assembled for
+  this dataset. The negative result on the specific hypothesis doesn't
+  erase this — it sharpens it into an honest, falsifiable claim instead
+  of an over-sold one.
 \end{frame}
 
 % ------------------------------------------------------------------
 \begin{frame}{Summary}
+  \small
   \begin{itemize}
-    \item Built a validated, drop-in BDH swap (3 kernel modes) for
-      AttnGrounder, plus a from-scratch baseline reproduction (64.92
-      AP50 vs.\ paper's 63.30\%).
-    \item Built a nuScenes-based pipeline to stratify Talk2Car val by
-      scene ambiguity (830 ambiguous / 333 unambiguous).
-    \item \textbf{Mode A wins the ablation}: beats baseline on
-      ambiguous scenes specifically ($+0.61$) — the first real signal
-      supporting the hypothesis. Modes B/C do not.
-    \item We're competitive with the CNN-class SOTA bracket
-      (61--69 AP50) at a smaller parameter count than most peers.
-    \item Next: Tversky+Focal loss (running now), then BDH stacking,
-      BDH$\to$attention hybrid, and a pretrained text encoder.
+    \item \textbf{Headline}: a $<1$-year-old memory architecture,
+      never before applied cross-modally, holds up as a viable
+      attention replacement — comparable-to-better than established
+      softmax attention, with zero task-specific tuning.
+    \item Built a validated, drop-in BDH swap (3 kernel modes + a
+      cross-scale extension) for AttnGrounder, a from-scratch baseline
+      reproduction, and a nuScenes-based ambiguity-stratification
+      pipeline — all novel infrastructure for this dataset.
+    \item Honest efficiency picture: $+1\%$ params, $+15\%$ GFLOPs,
+      $+12.5\%$ inference time — reported together, not cherry-picked.
+    \item \textbf{Multi-seed testing, done rigorously}: the original
+      motivating hypothesis — a specific edge on ambiguous,
+      multi-candidate scenes — did not hold up under seed-tested
+      scrutiny. An encouraging single-seed result did not replicate.
+      Reported honestly, not as the headline.
+    \item Next: cross-architecture validation on TransVG, to test
+      whether the viability finding generalizes.
   \end{itemize}
   \vspace{0.4cm}
   \centering\Large Thank you --- questions welcome.

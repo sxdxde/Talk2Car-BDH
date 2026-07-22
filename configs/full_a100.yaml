@@ -30,6 +30,11 @@ model:
     growing_scales: false    # "Mode E": cross-scale growing memory -- each scale's own
                               # output becomes the next (finer) scale's region prior,
                               # instead of each of the 3 FPN scales starting from scratch
+  text_encoder: glove        # "glove" (default, BiLSTM+GloVe) | "distilbert" (frozen,
+                              # offline, see arch2/build_text_cache.py) -- applies to
+                              # baseline or bdh equally, orthogonal to variant/bdh.mode
+  text_cache_path: null      # required when text_encoder: distilbert, e.g.
+                              # arch2/text_cache_distilbert.pth
   fusion:
     streams: [fvisu, flang_attn]
   lambda_map: 0.1

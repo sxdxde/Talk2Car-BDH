@@ -111,16 +111,20 @@ def build_target(raw_coord, pred, args, anchors_full, device):
 # model builder (variant-aware; assumes INTEGRATION.md applied)
 # --------------------------------------------------------------------------- #
 def build_model(args, corpus):
+    # text_encoder is orthogonal to variant/bdh_mode (applies to baseline or bdh
+    # equally) and defaults to "glove", which reproduces the exact original
+    # behavior in grounding_model.py -- safe to always pass.
     if args.variant == "bdh":
         # requires bdh_grounding/INTEGRATION.md applied to grounding_model.py
         return grounding_model(corpus=corpus, emb_size=args.emb_size, variant="bdh",
                                bdh_mode=args.bdh_mode, bdh_mult=args.bdh_mult,
                                bdh_n_head=args.bdh_n_head, bdh_dropout=args.bdh_dropout,
                                bdh_share_qv_encoder=args.bdh_share_qv_encoder,
-                               bdh_growing_scales=args.bdh_growing_scales)
+                               bdh_growing_scales=args.bdh_growing_scales,
+                               text_encoder=args.text_encoder)
     # baseline: call the STOCK grounding_model — no INTEGRATION.md edits needed,
     # so the reproduction / author-checkpoint eval runs against the unmodified repo.
-    return grounding_model(corpus=corpus, emb_size=args.emb_size)
+    return grounding_model(corpus=corpus, emb_size=args.emb_size, text_encoder=args.text_encoder)
 
 
 def make_optimizer(model, args):
@@ -296,6 +300,10 @@ def main():
                     help="override run.seed from the config (for multi-seed reruns)")
     ap.add_argument("--growing-scales", action="store_true",
                     help="override model.bdh.growing_scales to True (cross-scale growing memory, bdh variant only)")
+    ap.add_argument("--text-encoder", default=None, choices=["glove", "distilbert"],
+                    help="override model.text_encoder from the config (baseline or bdh)")
+    ap.add_argument("--text-cache", default=None,
+                    help="override model.text_cache_path from the config (required for --text-encoder distilbert)")
     cli = ap.parse_args()
 
     cfg = P.load_config(cli.config)
@@ -312,14 +320,22 @@ def main():
         args.seed = cli.seed
     if cli.growing_scales:
         args.bdh_growing_scales = True
-    # checkpoint tag must encode bdh_mode, map_loss, seed, and growing_scales
-    # (when overridden) too, otherwise runs that differ only in these
-    # overwrite each other's checkpoints
+    if cli.text_encoder:
+        args.text_encoder = cli.text_encoder
+    if cli.text_cache:
+        args.text_cache_path = cli.text_cache
+    if args.text_encoder == "distilbert" and not args.text_cache_path:
+        raise ValueError("--text-encoder distilbert requires --text-cache (or model.text_cache_path in the config)")
+    # checkpoint tag must encode bdh_mode, map_loss, seed, growing_scales, and
+    # text_encoder (when overridden) too, otherwise runs that differ only in
+    # these overwrite each other's checkpoints
     base_tag = args.variant if args.variant != "bdh" else f"bdh_{args.bdh_mode}"
     if cli.seed is not None:
         base_tag += f"_seed{args.seed}"
     if args.bdh_growing_scales:
         base_tag += "_grow"
+    if args.text_encoder == "distilbert":
+        base_tag += "_distilbert"
     args.ckpt_tag = base_tag + ("_tve" if args.map_loss == "tversky_focal" else "")
     device = P.resolve_device(args.device)
 
@@ -328,9 +344,11 @@ def main():
 
     tf = Compose([ToTensor(), Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])])
     train_ds = Talk2CarDataset(data_root=args.data_root, split="train", imsize=args.size,
-                               transform=tf, max_query_len=args.time, augment=True)
+                               transform=tf, max_query_len=args.time, augment=True,
+                               text_encoder=args.text_encoder, text_cache_path=args.text_cache_path)
     val_ds = Talk2CarDataset(data_root=args.data_root, split=args.eval_split, imsize=args.size,
-                             transform=tf, max_query_len=args.time)
+                             transform=tf, max_query_len=args.time,
+                             text_encoder=args.text_encoder, text_cache_path=args.text_cache_path)
     train_ds = P.maybe_subset(train_ds, args.subset_size)
     val_ds = P.maybe_subset(val_ds, args.subset_size)
     corpus = getattr(train_ds, "corpus", getattr(getattr(train_ds, "dataset", None), "corpus", None))
@@ -342,8 +360,8 @@ def main():
     model = build_model(args, corpus).to(device)
     n_params = sum(p.numel() for p in model.parameters())
     print(f"[model] variant={args.variant} bdh_mode={args.bdh_mode} map_loss={args.map_loss} "
-          f"growing_scales={args.bdh_growing_scales} ckpt_tag={args.ckpt_tag} "
-          f"emb_size={args.emb_size} params={n_params/1e6:.2f}M")
+          f"growing_scales={args.bdh_growing_scales} text_encoder={args.text_encoder} "
+          f"ckpt_tag={args.ckpt_tag} emb_size={args.emb_size} params={n_params/1e6:.2f}M")
 
     optimizer = make_optimizer(model, args)
     start_epoch, global_step, best = 0, 0, -float("inf")
