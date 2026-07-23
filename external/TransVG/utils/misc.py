@@ -18,7 +18,12 @@ from torch import Tensor
 
 # needed due to empty tensor bug in pytorch and torchvision 0.5
 import torchvision
-if float(torchvision.__version__[:3]) < 0.7:
+# NOTE(port): the original guard `float(torchvision.__version__[:3]) < 0.7`
+# is buggy for modern versions -- "0.19.1"[:3] == "0.1" -> 0.1 < 0.7 -> True,
+# so it wrongly tried to import _new_empty_tensor/_output_size (removed from
+# torchvision >= 0.10) and crashed at import. Parse major.minor as ints.
+_TV_LT_07 = tuple(int(x) for x in torchvision.__version__.split("+")[0].split(".")[:2]) < (0, 7)
+if _TV_LT_07:
     from torchvision.ops import _new_empty_tensor
     from torchvision.ops.misc import _output_size
 
@@ -487,7 +492,10 @@ def interpolate(input, size=None, scale_factor=None, mode="nearest", align_corne
     This will eventually be supported natively by PyTorch, and this
     class can go away.
     """
-    if float(torchvision.__version__[:3]) < 0.7:
+    # Modern torch handles empty batches natively; the old torchvision
+    # workaround (_new_empty_tensor/_output_size, and torchvision.ops.misc.
+    # interpolate) is gone in tv>=0.10, so just defer to F.interpolate there.
+    if _TV_LT_07:
         if input.numel() > 0:
             return torch.nn.functional.interpolate(
                 input, size, scale_factor, mode, align_corners
@@ -496,5 +504,4 @@ def interpolate(input, size=None, scale_factor=None, mode="nearest", align_corne
         output_shape = _output_size(2, input, size, scale_factor)
         output_shape = list(input.shape[:-2]) + list(output_shape)
         return _new_empty_tensor(input, output_shape)
-    else:
-        return torchvision.ops.misc.interpolate(input, size, scale_factor, mode, align_corners)
+    return torch.nn.functional.interpolate(input, size, scale_factor, mode, align_corners)

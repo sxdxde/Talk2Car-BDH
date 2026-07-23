@@ -1364,3 +1364,80 @@ is the headline.
   slides reordered so the viability claim (exampleblock / first bullet)
   leads and the mechanism result (alertblock / later bullet) follows —
   content of both claims unchanged, only order and framing.
+
+## TransVG cross-architecture port — BDH swap DONE + locally verified (2026-07-22)
+
+Started the TransVG phase (the planned cross-architecture validation).
+Decision recap, confirmed with reasoning before building: keep the DATASET
+fixed (Talk2Car) and change only the ARCHITECTURE, so the single variable
+tested is "does BDH's viability generalize beyond one 2020 CNN-based
+grounder." Also confirmed TransVG is a defensible choice specifically
+because (a) it already has a published Talk2Car number (65.83 AP50, in
+ThinkDeeper's table) so it is NOT foreign to the benchmark and we can
+sanity-check our reimplementation against it; (b) it is architecturally
+DISTANT from AttnGrounder (transformer V-L fusion + regression head vs.
+CNN + softmax cross-attention + YOLO head), which is exactly what a
+generalization test needs; (c) same "single cleanly-swappable fusion
+component + official code" selection criterion used for AttnGrounder;
+(d) CMSVG, the more obviously Talk2Car-native alternative, was already
+ruled out (FINDINGS.md CORRECTION 2026-07-20) for depending on pretrained
+Sentence-BERT/EfficientNet, failing the isolate-the-mechanism criterion.
+
+**The swap point is different from AttnGrounder's** and this matters for
+the claim. AttnGrounder had a single spatial visual->text cross-attention
+module we replaced wholesale. TransVG instead concatenates
+[REG]; text_tokens; visual_tokens into ONE sequence and runs it through a
+6-layer transformer encoder; the "attention" is the nn.MultiheadAttention
+self-attn INSIDE each encoder layer (vl_transformer.py:73). So the faithful
+BDH swap here = replace that self-attention operator with a non-causal,
+mask-aware BDH associative-memory self-attention, keeping the encoder
+layer's residual + FFN + LayerNorm identical. Only the attention mechanism
+changes -> the baseline-vs-BDH comparison isolates it, same discipline as
+the AttnGrounder phase.
+
+New module `bdh_grounding/bdh_selfattn.py` (BDHSelfAttention) — NOT the old
+bdh_fusion.py, which is spatial-grid-specific (H×W reshaping, the beta map
+for AttnGrounder's BCE aux loss, none of which TransVG has). It is built to
+match nn.MultiheadAttention's forward signature EXACTLY (q,k,v, attn_mask,
+key_padding_mask) -> (out, None) so it drops in with a one-line constructor
+change and no call-site edits. Mechanism = same BDH memory (lift to
+ReLU-sparse n-dim, rho = K^T V outer-product memory, gated bilinear
+read+decode) as bdh_fusion but non-causal, symmetric, reading out ALL
+positions; closest to the old mode "B" (single sequence) minus causality
+and RoPE (position comes from TransVG's own learned vl_pos embeddings,
+folded into q/k upstream). Stacked once per encoder layer -> N layers give
+N sequential BDH reads with FFN+residual between, a faithful analog of
+"N layers of self-attention -> N layers of BDH self-attention."
+
+Files changed/added (all local, synced-to-remote model, py_compile clean):
+- `bdh_grounding/bdh_selfattn.py` (NEW) — the operator.
+- `external/TransVG/models/vl_transformer.py` — gated `attn_type` ('mha'|
+  'bdh') threaded through VisionLanguageEncoder -> TransformerEncoderLayer;
+  robust bdh_grounding import; **_reset_parameters guarded so TransVG's
+  xavier_uniform_ does NOT clobber BDH's deliberate normal_(0.02) init**
+  (verified: BDH E/Dx std stays ~0.02, FFN linears still xavier).
+- `external/TransVG/datasets/data_loader.py` — registered 'talk2car' in
+  SUPPORTED_DATASETS + a talk2car im_dir branch. pull_item's existing
+  refcoco branch already handles our 5-tuple + xywh->xyxy, no edit needed.
+- `external/TransVG/train.py` — added --vl_attn_type/--bdh_mult/
+  --bdh_share_qv args.
+- `arch3/build_transvg_talk2car.py` (NEW) — converts our
+  talk2car_{split}.pth (img_file, bbox_xywh, phrase) into TransVG's
+  (img_file, None, bbox_xywh, phrase, None) 5-tuple. A pure repack: same
+  filenames, same xywh boxes, same phrases — the DATA both models see is
+  identical, only architecture + text tokenizer (BERT vs GloVe) differ.
+  Only train/val (test is GT-less).
+- `tests/transvg_bdh_test.py` (NEW, all pass) — signature/shape parity with
+  nn.MultiheadAttention; attn_mask fail-loud; **key_padding_mask zero-leakage
+  (corrupting padded tokens leaves every real-token output bit-identical)**;
+  both modes forward+backprop; init preservation; build_vl_transformer arg
+  threading incl. legacy-args-default-to-mha safety; share_qv param math.
+
+**Locally VERIFIED**: the operator + wiring (above). **NOT locally testable
+(remote/GPU/pytorch_pretrained_bert/data), pending on remote**: full TransVG
+forward, the Talk2Car loader end-to-end, real training. Remote runbook (rsync
++ DETR-R50 weights + BERT + converter + symlink + baseline & BDH train
+commands) is in STATUS.md. Plan per the stopping rule: run just baseline +
+one BDH config, ~2 seeds, val AP50 only — a lighter variance check, NOT a
+second full ablation. Baseline should land near the published 65.83 as the
+reimplementation sanity check before any BDH conclusion is drawn.

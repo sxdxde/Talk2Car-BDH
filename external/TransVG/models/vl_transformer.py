@@ -174,6 +174,9 @@ def build_vl_transformer(args):
         dim_feedforward=args.vl_dim_feedforward,
         num_encoder_layers=args.vl_enc_layers,
         normalize_before=False,
+        attn_type=getattr(args, "vl_attn_type", "mha"),
+        bdh_mult=getattr(args, "bdh_mult", 4),
+        bdh_share_qv=getattr(args, "bdh_share_qv", False),
     )
 
 

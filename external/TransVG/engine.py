@@ -88,7 +88,12 @@ def validate(args, model: torch.nn.Module, data_loader: Iterable, device: torch.
 
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()
-    stats = {k: meter.global_avg for k, meter in metric_logger.meters.items()}
+    # NOTE(port): miou/accu are accumulated as scalar CUDA tensors (see
+    # eval_utils.trans_vg_eval_val), so meter.global_avg is a tensor and the
+    # downstream json.dumps(log_stats) in train.py crashes ("Tensor is not JSON
+    # serializable"). Coerce to plain floats -- safe for the best-accu
+    # comparison and checkpoint save that also read these.
+    stats = {k: float(meter.global_avg) for k, meter in metric_logger.meters.items()}
     return stats
 
 

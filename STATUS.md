@@ -365,3 +365,68 @@ rsync -avz <path> cs24d0010@172.16.1.199:~/BDH/Talk2Car/AttnGrounder/
 # always pin the A100, never let anything land on the Quadro P2000
 CUDA_VISIBLE_DEVICES=0 python ...
 ```
+
+## TransVG cross-architecture phase — REMOTE RUNBOOK (2026-07-22)
+
+BDH swap is code-complete + locally verified (see FINDINGS.md "TransVG
+cross-architecture port"). Everything below runs ON REMOTE — the data,
+DETR/BERT weights, and GPU are all there; none of it is locally testable.
+Proposed remote home: `~/BDH/Talk2Car/TransVG/`.
+
+**Step 0 — sync the ported code up** (from local):
+```bash
+rsync -avz external/TransVG/ cs24d0010@172.16.1.199:~/BDH/Talk2Car/TransVG/
+rsync -avz bdh_grounding/  cs24d0010@172.16.1.199:~/BDH/Talk2Car/TransVG/bdh_grounding/
+rsync -avz arch3/          cs24d0010@172.16.1.199:~/BDH/Talk2Car/TransVG/arch3/
+# bdh_grounding must sit at TransVG root so vl_transformer.py's
+# `from bdh_grounding.bdh_selfattn import ...` resolves (run from that root).
+```
+
+**Step 1 — env + pretrained weights** (remote, `brats` env):
+```bash
+conda activate brats
+pip install pytorch_pretrained_bert            # TransVG's BERT dep (if missing)
+cd ~/BDH/Talk2Car/TransVG
+bash checkpoints/download_detr_model.sh        # -> checkpoints/detr-r50.pth
+# BERT (bert-base-uncased) auto-downloads on first run; needs internet once.
+```
+
+**Step 2 — build the Talk2Car splits in TransVG format + images symlink**:
+```bash
+python arch3/build_transvg_talk2car.py \
+    --src-root ~/BDH/Talk2Car/AttnGrounder/ln_data \
+    --out-root ~/BDH/Talk2Car/TransVG/data \
+    --splits train val
+ln -s ~/BDH/Talk2Car/AttnGrounder/ln_data/images \
+      ~/BDH/Talk2Car/TransVG/data/talk2car/images
+```
+
+**Step 3 — SANITY FIRST: reproduce the TransVG baseline on Talk2Car**
+(must land near the published 65.83 AP50 before trusting ANY BDH number):
+```bash
+CUDA_VISIBLE_DEVICES=0 python train.py \
+    --dataset talk2car --data_root ./data --split_root ./data \
+    --detr_model ./checkpoints/detr-r50.pth --max_query_len 20 \
+    --vl_attn_type mha \
+    --batch_size 8 --epochs 90 --output_dir ./outputs/talk2car_mha
+```
+
+**Step 4 — the BDH swap run** (identical except `--vl_attn_type bdh`):
+```bash
+CUDA_VISIBLE_DEVICES=0 python train.py \
+    --dataset talk2car --data_root ./data --split_root ./data \
+    --detr_model ./checkpoints/detr-r50.pth --max_query_len 20 \
+    --vl_attn_type bdh --bdh_mult 4 \
+    --batch_size 8 --epochs 90 --output_dir ./outputs/talk2car_bdh
+```
+
+Scope (stopping rule, FINDINGS.md 2026-07-21): baseline + ONE BDH config,
+~2 seeds (`--seed`), val AP50 only. A lighter variance check, NOT a second
+full ablation. First confirm the mha baseline reproduces ~65.83, then draw
+the BDH-vs-baseline comparison the same way as the AttnGrounder phase.
+
+Watch-outs (untested remotely yet): first BDH forward pass shape/mask
+sanity on real batches; TransVG's `utils.collate_fn` NestedTensor path with
+our data; single-GPU (non-distributed) init — `init_distributed_mode`
+should no-op without env vars. Run a 1-epoch smoke of the mha baseline
+first to shake out data/weights/env before committing to full runs.

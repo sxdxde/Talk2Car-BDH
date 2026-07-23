@@ -94,6 +94,20 @@ def get_args_parser():
     parser.add_argument('--vl_enc_layers', default=6, type=int,
                         help='Number of encoders in the vision-language transformer')
 
+    # --- BDH self-attention swap (our cross-architecture validation) ---------
+    # Selects the self-attention operator inside the V-L fusion encoder layers.
+    # 'mha' = original nn.MultiheadAttention (TransVG baseline); 'bdh' = BDH
+    # associative-memory self-attention (bdh_grounding/bdh_selfattn.py). Only
+    # this operator changes -- residual/FFN/LayerNorm are identical -- so the
+    # baseline-vs-BDH comparison isolates the attention mechanism.
+    parser.add_argument('--vl_attn_type', default='mha', type=str,
+                        choices=('mha', 'bdh'),
+                        help="V-L fusion self-attention: 'mha' baseline or 'bdh' swap")
+    parser.add_argument('--bdh_mult', default=4, type=int,
+                        help='BDH neuron expansion n = bdh_mult * vl_hidden_dim (bdh only)')
+    parser.add_argument('--bdh_share_qv', action='store_true',
+                        help='Tie BDH query-address and value-path encoders (bdh only)')
+
     # Dataset parameters
     parser.add_argument('--data_root', type=str, default='./ln_data/',
                         help='path to ReferIt splits data folder')

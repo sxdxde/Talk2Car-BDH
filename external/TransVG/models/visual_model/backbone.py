@@ -86,10 +86,14 @@ class Backbone(BackboneBase):
                  return_interm_layers: bool,
                  dilation: bool):
 
+        # NOTE(port): dropped `pretrained=False` -- that kwarg was removed from
+        # torchvision model constructors in tv>=0.16 (TypeError on 0.19). The
+        # default (no weights arg) is random init, identical to pretrained=False,
+        # and works across all torchvision versions. The backbone is overwritten
+        # by the DETR checkpoint (--detr_model, strict=False) regardless.
         backbone = getattr(torchvision.models, name)(
             replace_stride_with_dilation=[False, False, dilation],
-            pretrained=False, norm_layer=FrozenBatchNorm2d)
-            # pretrained=is_main_process(), norm_layer=FrozenBatchNorm2d)
+            norm_layer=FrozenBatchNorm2d)
         assert name in ('resnet50', 'resnet101')
         num_channels = 2048
         super().__init__(name, backbone, num_channels, return_interm_layers)
