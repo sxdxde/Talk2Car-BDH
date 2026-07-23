@@ -23,13 +23,21 @@ Usage (from the TransVG root on remote):
         --imsize 640 --n 8
 """
 import os
+import sys
 import argparse
+
+# This script lives in arch3/, so the TransVG root isn't on sys.path by default
+# and `import datasets.transforms` would grab the HuggingFace `datasets` package
+# from site-packages instead of TransVG's local datasets/ dir. Put the TransVG
+# root (arch3/..) first so the local package wins.
+_TRANSVG_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, _TRANSVG_ROOT)
 
 import numpy as np
 import torch
 from PIL import Image
 
-import datasets.transforms as T   # no BERT dep, safe to import standalone
+import datasets.transforms as T   # local TransVG transforms (no BERT dep)
 
 
 def summarize_boxes(entries, imdir, imsize, tag):

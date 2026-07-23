@@ -1441,3 +1441,76 @@ commands) is in STATUS.md. Plan per the stopping rule: run just baseline +
 one BDH config, ~2 seeds, val AP50 only — a lighter variance check, NOT a
 second full ablation. Baseline should land near the published 65.83 as the
 reimplementation sanity check before any BDH conclusion is drawn.
+
+## Remote compat fixes (2026-07-22/23): torchvision/torch version drift in TransVG's original 2021 code
+
+Three pre-existing bugs in TransVG's own code (not our port) surfaced only on
+remote's modern torch 2.4.1 / torchvision 0.19, all from the codebase's 2021
+version-guard logic breaking on newer version strings:
+- `utils/misc.py`: `float(torchvision.__version__[:3]) < 0.7` parses "0.19.1"
+  as "0.1" -> wrongly True -> imports `_new_empty_tensor`/`_output_size`,
+  removed from torchvision >= 0.10 -> ImportError at module load. Fixed by
+  parsing (major, minor) as ints; falls back to native `F.interpolate`
+  (handles empty batches natively in modern torch, no workaround needed).
+- `models/visual_model/backbone.py`: `pretrained=False` kwarg to
+  `torchvision.models.resnet50(...)` — removed in torchvision >= 0.16 ->
+  TypeError. Dropped the kwarg (default = random init, same effect; backbone
+  is overwritten by the DETR checkpoint via `--detr_model` regardless).
+- `engine.py :: validate()`: `miou`/`accu` meters accumulate CUDA tensors, so
+  `meter.global_avg` is a tensor -> `json.dumps(log_stats)` in train.py
+  crashes every epoch ("Tensor is not JSON serializable"). Fixed by coercing
+  to `float()` in `validate()`'s return dict.
+
+All three confirmed via 1-epoch smoke run (full epoch + eval + log write
+completed clean after the fixes).
+
+## TransVG baseline flat-loss bug hunt (2026-07-22/23): NOT a bug, a recipe/scale problem
+
+First real 90-epoch `mha` baseline run collapsed: training loss essentially
+flat (epoch-0 avg 1.6587 -> epoch-78 avg 1.6571), val accu stuck ~1%,
+`loss_giou`~1.19 implying near-zero predicted/GT box overlap — a mean-box
+collapse. Diagnosed methodically rather than guessing, in two steps:
+
+1. **Data integrity check** (`arch3/diagnose_talk2car_transvg.py`, run on the
+   full val split): 0% out-of-bounds boxes, 0% invalid normalized targets,
+   converter fidelity confirmed sample-by-sample against the original
+   AttnGrounder split, `cx` std=0.25 (targets genuinely vary). Talk2Car's
+   narrow `cy` std (0.035, objects cluster near the horizon in driving
+   scenes) is real but not degenerate — cleared the data/converter entirely.
+2. **Overfit-8-samples test** (`arch3/overfit_test.py`, the definitive
+   bug-vs-recipe localizer: a correct model can always memorize one fixed
+   small batch): 300 steps on the SAME 8 training samples took loss
+   2.05->0.29 and accu 0.0->1.0. **Proved the forward/loss/target/DETR-load
+   plumbing is entirely correct** — no code bug anywhere in the pipeline.
+
+Conclusion: the full-run failure was pure training-dynamics, traced to two
+recipe deviations from TransVG's own published `train.sh` (used for their
+verified RefCOCO/ReferIt numbers): their `--batch_size 8` is PER-GPU across
+8 GPUs (effective batch 64; ours was 8 on 1 GPU), and they use
+`--aug_crop --aug_scale --aug_translate` (ours had none). At effective
+batch 8 + zero augmentation, the random-init VL-fusion got high-variance
+gradients over 8349 diverse small-object samples and settled into the
+mean-box basin instead of learning input-conditional localization.
+
+**Fix + result**: relaunched with `--batch_size 32` (4x, no OOM on the A100)
++ all three aug flags, otherwise identical. Immediately healthy: by
+epoch 60, val accu ~52% (miou 0.44), still improving. **90-epoch run
+finished** (9h35m wall time): final-epoch val accu ~54.3%, loss 1.66->0.66
+total (loss_giou 1.19->0.55). Landing somewhat below the published 65.83 is
+expected and NOT a concern — effective batch 32 vs their 64, and vanilla
+COCO-pretrained DETR vs their dataset-specific (referit-pretrained) DETR
+init; for the BDH-vs-baseline comparison what matters is a healthy baseline
+trained under an IDENTICAL recipe to the BDH arm, not matching their exact
+published number to the decimal — same principle as the AttnGrounder phase.
+**Best-checkpoint result: val accu = 0.5520 (55.20%) at epoch 82**
+(`outputs/talk2car_mha/best_checkpoint.pth`; final epoch 89 was slightly
+lower at 0.5426, normal late-training noise, best-checkpoint is the one
+that matters and is what TransVG's own save logic already tracked).
+
+**This is our TransVG-on-Talk2Car baseline number: 55.20% val accu@0.5.**
+Reference point for the BDH comparison below (not the published 65.83,
+per the recipe-gap discussion above — a fair like-for-like baseline under
+OUR recipe, which is what the BDH run also uses).
+
+**Next**: BDH run launched with the IDENTICAL corrected recipe (only
+`--vl_attn_type bdh --bdh_mult 4` differs) — `outputs/talk2car_bdh/`.
