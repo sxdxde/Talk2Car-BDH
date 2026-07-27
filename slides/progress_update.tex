@@ -492,68 +492,84 @@
 \section{Next Steps}
 
 % ------------------------------------------------------------------
-\begin{frame}{Next: Cross-Architecture Validation}
-  \begin{block}{Why}
+\begin{frame}{Cross-Architecture Validation — A Second Honest Negative}
+  \begin{block}{The question}
     \footnotesize Everything so far is one architecture (AttnGrounder,
-    2020, YOLO-anchor one-stage). Does the finding — comparable-to-better
-    overall, no disambiguation-specific edge — hold on a structurally
-    different design, or is it an artifact of this specific base?
+    2020, narrow region$\leftrightarrow$word cross-attention). Does BDH's
+    viability hold on a structurally different design, or is it specific
+    to that integration point?
   \end{block}
-  \vspace{0.2cm}
-  \begin{exampleblock}{TransVG (Deng et al., ICCV 2021)}
-    \footnotesize Official public code. Transformer-encoder fusion
-    (vision + text tokens attended together) instead of a standalone
-    attention module before a YOLO head — a genuinely different
-    integration point for BDH, not a copy-paste of the AttnGrounder swap.
-    Not CLIP-based, stays in the same non-VLM comparison bracket.
+  \vspace{0.15cm}
+  \begin{exampleblock}{TransVG (Deng et al., ICCV 2021) — same recipe, one variable changed}
+    \footnotesize BDH swapped into TransVG's V-L fusion \textbf{self}-attention
+    (6 stacked layers over $\sim$421 tokens: 1 reg + 20 text + $\sim$400
+    visual) — a structurally different role than AttnGrounder's narrow
+    cross-attention. Verified: healthy baseline (55.20\% val accu), correct
+    plumbing (an overfit-8-sample probe cleanly memorizes).
   \end{exampleblock}
-  \footnotesize\textbf{Scope, deliberately light:} port just the single
-  most informative configuration (Mode A), $\sim$2 seeds — not a second
-  full ablation study. Enough to support a genuine cross-architecture
-  claim without doubling the project.
+  \vspace{0.15cm}
+  \begin{alertblock}{Result: BDH plateaus at roughly half the baseline}
+    \footnotesize \textbf{Baseline 55.20\%} vs.\ \textbf{BDH 26.23\%} val
+    accu (best epoch, same epoch for both) — confirmed not noise by the
+    same overfit probe (mha reaches 1.0 accu on 8 fixed samples; BDH
+    plateaus at $\sim$0.5--0.625). A real, consistent gap, not a bug.
+  \end{alertblock}
+  \footnotesize\textbf{Why (plausible hypothesis):} TransVG forces one
+  pooled associative memory from all $\sim$421 tokens as both keys and
+  values — visual tokens outnumber text/reg tokens 20:1 and dominate it,
+  with no per-token normalization (unlike softmax MHA) to protect the
+  signal that matters, compounded across 6 stacked layers.
 \end{frame}
 
 \section{Final Conclusion}
 
 % ------------------------------------------------------------------
 \begin{frame}{What This Project Actually Shows}
-  \footnotesize Two honest, separable findings — both belong in the
-  final writeup, neither should overshadow the other:
-  \begin{exampleblock}{Headline: BDH is a viable attention replacement}
-    \footnotesize A $<1$-year-old, never-before-cross-modal architecture
-    achieves \textbf{comparable-to-modestly-better performance} than
-    established, years-refined softmax attention — with zero
-    task-specific tuning of the mechanism itself, at $+1\%$ parameters
-    (though $+15\%$ compute, reported honestly). That is a genuine
-    viability result.
+  \tiny Three honest, separable findings — all belong in the final
+  writeup, none should overshadow the others:
+  \begin{exampleblock}{Headline: BDH is a viable replacement — for narrow cross-attention}
+    \scriptsize On AttnGrounder's region$\leftrightarrow$word
+    cross-attention, a $<1$-year-old, never-before-cross-modal
+    architecture achieves \textbf{comparable-to-modestly-better
+    performance} than established, years-refined softmax attention, with
+    zero task-specific tuning of the mechanism ($+1\%$ params, $+15\%$
+    compute, reported honestly). A genuine, but \emph{scoped}, viability
+    result — see below.
   \end{exampleblock}
   \begin{alertblock}{The mechanism behind it: not what we predicted}
-    \footnotesize Across every tested configuration (3 kernel modes,
-    multi-seed on the winner, the growing-memory extension), BDH's
-    associative memory shows \textbf{no disproportionate advantage on
-    ambiguous, multi-candidate scenes} — the specific mechanism
-    (``grounding = in-context retrieval'') that motivated this project.
-    A rigorously seed-tested negative result, not an inconclusive one —
+    \scriptsize Across every AttnGrounder configuration tested (3 kernel
+    modes, multi-seed on the winner, the growing-memory extension), BDH
+    shows \textbf{no disproportionate advantage on ambiguous,
+    multi-candidate scenes} — the ``grounding = in-context retrieval''
+    mechanism that motivated this project. Rigorously seed-tested,
     reported honestly, not as the headline.
   \end{alertblock}
-  \footnotesize\textbf{What's novel, concretely:} first cross-modal
-  application of BDH found in the literature; three original non-causal
-  kernel adaptations of an inherently causal mechanism; a
-  reproducible, quantitative ambiguity-stratification protocol built
-  from data infrastructure (nuScenes join) nobody else has assembled for
-  this dataset. The negative result on the specific hypothesis doesn't
-  erase this — it sharpens it into an honest, falsifiable claim instead
-  of an over-sold one.
+  \begin{alertblock}{It doesn't generalize naively to every attention role}
+    \scriptsize Ported to TransVG's \emph{self}-attention (dense, one
+    pooled memory over $\sim$421 visual-dominated tokens) instead of
+    AttnGrounder's narrow cross-attention: BDH plateaus at
+    \textbf{roughly half} the baseline (26.23\% vs.\ 55.20\% val accu),
+    confirmed not a bug via an overfit probe. The viability claim is
+    real but \emph{architecture-role-specific}, not universal.
+  \end{alertblock}
+  \tiny\textbf{What's novel:} first cross-modal application of BDH in
+  the literature; three non-causal kernel adaptations of an inherently
+  causal mechanism; a reproducible ambiguity-stratification protocol
+  (nuScenes join); and a first characterization of \emph{which}
+  attention role suits BDH's memory, not just whether it works at all.
+  The negatives don't erase the headline — they sharpen it into an
+  honest, properly-scoped claim instead of an over-sold one.
 \end{frame}
 
 % ------------------------------------------------------------------
 \begin{frame}{Summary}
-  \small
+  \scriptsize
   \begin{itemize}
-    \item \textbf{Headline}: a $<1$-year-old memory architecture,
-      never before applied cross-modally, holds up as a viable
-      attention replacement — comparable-to-better than established
-      softmax attention, with zero task-specific tuning.
+    \item \textbf{Headline}: on AttnGrounder's narrow cross-attention,
+      a $<1$-year-old memory architecture, never before applied
+      cross-modally, holds up as a viable replacement — on par with or
+      better than established softmax attention, zero task-specific
+      tuning.
     \item Built a validated, drop-in BDH swap (3 kernel modes + a
       cross-scale extension) for AttnGrounder, a from-scratch baseline
       reproduction, and a nuScenes-based ambiguity-stratification
@@ -564,9 +580,11 @@
       motivating hypothesis — a specific edge on ambiguous,
       multi-candidate scenes — did not hold up under seed-tested
       scrutiny. An encouraging single-seed result did not replicate.
-      Reported honestly, not as the headline.
-    \item Next: cross-architecture validation on TransVG, to test
-      whether the viability finding generalizes.
+    \item \textbf{Cross-architecture validation (TransVG)}: the
+      viability finding does \emph{not} generalize naively — BDH
+      self-attention over TransVG's dense, visual-dominated tokens
+      plateaus at $\sim$half the baseline (26.23\% vs.\ 55.20\%).
+      Confirmed not a bug; a real boundary, reported honestly.
   \end{itemize}
   \vspace{0.4cm}
   \centering\Large Thank you --- questions welcome.

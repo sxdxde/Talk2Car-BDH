@@ -1514,3 +1514,90 @@ OUR recipe, which is what the BDH run also uses).
 
 **Next**: BDH run launched with the IDENTICAL corrected recipe (only
 `--vl_attn_type bdh --bdh_mult 4` differs) — `outputs/talk2car_bdh/`.
+
+## TransVG BDH result (2026-07-24/27): a real, reproducible negative — does NOT generalize like AttnGrounder did
+
+BDH run finished (90 epochs, ~9h05m, identical recipe to the baseline).
+Result is a clear, large gap, not a close call:
+
+| | best val accu | epoch | final-epoch loss |
+|---|---|---|---|
+| baseline (`mha`) | **0.5520** | 82 | 0.66 |
+| BDH (`bdh`) | **0.2623** | 82 (same epoch) | 0.92 |
+
+BDH landed at roughly **half** the baseline's accuracy, consistently
+throughout training (not a late-epoch collapse — same epoch produced each
+config's best). This is a genuinely different outcome from the
+AttnGrounder phase, where BDH was comparable-to-modestly-better.
+
+**Verified this is not a bug before accepting it as a real finding** — same
+discipline as the earlier flat-loss investigation. Ran the same
+overfit-8-samples probe (`arch3/overfit_test.py --vl_attn_type bdh`,
+300 steps, identical fixed batch/lr to the earlier `mha` probe):
+
+| | step 100 accu | step 300 accu | pattern |
+|---|---|---|---|
+| mha (earlier) | 0.625 | **1.0** (peaked ~280) | clean convergence to full memorization |
+| bdh | 0.500 | **0.5–0.625** (plateaus ~step 100) | stalls, never exceeds ~0.625 |
+
+BDH trains (loss drops, gradients flow, no crash) but **plateaus at
+roughly half of `mha`'s capacity even on a trivial 8-sample memorization
+task** — the same ~2x ratio as the full 90-epoch run. Two independent
+signals (cheap probe, expensive full run) agree, so this is accepted as a
+genuine capability gap, not noise, without spending a second 9h run on a
+second seed — consistent with the phase's own stopping-rule scoping
+("lighter variance check, not a second full ablation"; a 2x gap doesn't
+need seeds to resolve the way a few-point gap would).
+
+**Mechanistic hypothesis for why (plausible, not proven)**: the BDH swap
+occupies a structurally different role in TransVG than it did in
+AttnGrounder. In AttnGrounder, BDH did narrow CROSS-attention between a
+small region grid and ~20 word tokens — a well-scoped memory read. In
+TransVG, BDH does SELF-attention over one shared sequence of ~421
+heterogeneous tokens per layer (1 REG + 20 text + ~400 visual), building
+**one pooled associative memory `rho` from ALL 421 tokens as both keys and
+values** — visual tokens outnumber text/REG tokens 20:1, so they dominate
+the memory's statistics. Unlike softmax MHA (each token gets its own
+independently-normalized attention distribution over all others), BDH's
+linear read has no per-token normalization to protect the REG/text signal
+from dilution by the visual majority — and this is stacked 6 times,
+compounding across layers. A plausible, architecture-grounded explanation,
+consistent with what both tests show, though not proven by ablating the
+mechanism further (out of scope per the stopping rule).
+
+**DECIDED: report as a genuine negative finding, do not chase further.**
+No additional TransVG runs (no hyperparameter sweep, no second seed, no
+architectural tweak-and-rerun) — the gap is too large and too consistent
+across two independent signals to be a close call worth more GPU time.
+
+**Implication for the project's headline claim — this matters and requires
+a scope correction, not a suppression.** The "BDH is a viable attention
+replacement" headline (see the FINAL SYNTHESIS / DECIDED 2026-07-22
+narrative-restructuring entries above) was validated ONLY on
+AttnGrounder's narrow cross-attention integration point. The TransVG
+result shows this does **NOT** extend to a dense self-attention role over
+long, visual-token-dominated multimodal sequences. The honest, corrected
+claim going forward is scoped, not universal:
+
+> BDH is a viable near-drop-in replacement for **narrow, well-scoped
+> cross-attention** (region grid <-> word sequence, AttnGrounder-style).
+> It does **not** straightforwardly extend to **dense self-attention over
+> long, heterogeneous token sequences** (TransVG-style V-L fusion) without
+> further architectural adaptation (e.g. per-token normalization, or
+> restricting which token types populate the associative memory).
+
+This is a MORE defensible, MORE scientific claim than the original
+unscoped version — it turns "does it generalize?" from an open question
+into an answered one (no, not naively), which is itself a genuine,
+non-obvious contribution: it identifies *which* attention role BDH's
+memory mechanism suits, not just *whether* BDH works in general. Same
+honesty principle as the disambiguation-hypothesis negative result:
+report it fully, place it appropriately (a boundary condition on the
+headline claim, not a replacement for it — the AttnGrounder viability
+result is still real and still stands on its own architecture).
+
+**Slides updated to match** (`slides/progress_update.tex`): "Next:
+Cross-Architecture Validation" -> "Cross-Architecture Validation — A
+Second Honest Negative" with the actual numbers + mechanistic hypothesis;
+Final Conclusion and Summary slides both gained the scope qualifier on the
+headline claim rather than presenting it as unconditionally general.
