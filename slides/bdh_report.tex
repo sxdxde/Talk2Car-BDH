@@ -1,0 +1,482 @@
+\documentclass[11pt]{article}
+
+\usepackage[a4paper,margin=1in]{geometry}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage{titlesec}
+\usepackage{fancyhdr}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue!50!black,
+  citecolor=blue!50!black,
+  urlcolor=blue!50!black,
+  pdftitle={BDH to AttnGrounder: A Mechanistic Study Guide},
+  pdfauthor={Sudarshan Sudhakar}
+}
+
+\definecolor{codebg}{RGB}{245,245,248}
+\definecolor{codekw}{RGB}{0,90,180}
+\definecolor{codecomment}{RGB}{110,110,110}
+
+\lstset{
+  basicstyle=\ttfamily\small,
+  backgroundcolor=\color{codebg},
+  commentstyle=\color{codecomment}\itshape,
+  keywordstyle=\color{codekw}\bfseries,
+  frame=single,
+  rulecolor=\color{gray!40},
+  framesep=6pt,
+  xleftmargin=6pt,
+  xrightmargin=6pt,
+  breaklines=true,
+  showstringspaces=false,
+  columns=flexible,
+  language=Python,
+  morekeywords={ReLU,softmax,sigmoid}
+}
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small BDH $\to$ AttnGrounder}
+\fancyhead[R]{\small Study Guide}
+\fancyfoot[C]{\thepage}
+\renewcommand{\headrulewidth}{0.3pt}
+
+\titleformat{\section}{\Large\bfseries\color{blue!40!black}}{\thesection}{0.5em}{}
+\titleformat{\subsection}{\large\bfseries\color{blue!30!black}}{\thesubsection}{0.5em}{}
+
+\newlength{\boxinnerwidth}
+\newsavebox{\keyboxbin}
+\newsavebox{\qaboxbin}
+
+\newenvironment{keybox}[1][]{%
+  \def\tmptitle{#1}%
+  \setlength{\boxinnerwidth}{\dimexpr\linewidth-2\fboxsep-2\fboxrule\relax}%
+  \begin{lrbox}{\keyboxbin}
+  \begin{minipage}{\boxinnerwidth}
+  \ifx\tmptitle\empty\else\noindent\textbf{\tmptitle}\par\smallskip\fi
+}{%
+  \end{minipage}
+  \end{lrbox}%
+  \par\addvspace{8pt}\noindent\fcolorbox{blue!35!black}{blue!4}{\usebox{\keyboxbin}}\par\addvspace{8pt}%
+}
+
+\newenvironment{qabox}[1]{%
+  \setlength{\boxinnerwidth}{\dimexpr\linewidth-2\fboxsep-2\fboxrule\relax}%
+  \begin{lrbox}{\qaboxbin}
+  \begin{minipage}{\boxinnerwidth}
+  \noindent\textbf{#1}\par\smallskip
+}{%
+  \end{minipage}
+  \end{lrbox}%
+  \par\addvspace{8pt}\noindent\fcolorbox{orange!60!black}{yellow!6}{\usebox{\qaboxbin}}\par\addvspace{8pt}%
+}
+
+\newcommand{\R}{\mathbb{R}}
+
+\title{\textbf{BDH $\to$ AttnGrounder}\\[4pt]
+\large A Mechanistic Study Guide: What We Built and the Math Behind It}
+\author{Sudarshan Sudhakar}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{keybox}[{One-sentence pitch}]
+AttnGrounder originally grounds a phrase by having every image region compute a
+softmax-weighted average over the command's word vectors. We replaced that one
+attention module with BDH's mechanism --- lift regions and words into a
+high-dimensional sparse space, build one explicit associative-memory matrix from
+the words via an outer product, let every region read from that same memory, and
+combine what a region already represents with what it retrieved \emph{multiplicatively}
+rather than by averaging --- to test whether this sharper, memory-based readout
+disambiguates scenes with multiple same-class objects better than softmax does.
+\end{keybox}
+
+\tableofcontents
+
+% =====================================================================
+\section{The Baseline: AttnGrounder's Original Attention}
+
+File: \texttt{external/AttnGrounder/model/grounding\_model.py}, method
+\texttt{text\_attn} ($\sim$line 199).
+
+\paragraph{Inputs / outputs.}
+\begin{itemize}[leftmargin=1.4em]
+  \item \texttt{image\_feat}: $(B, C, H, W)$ --- a grid of visual region features,
+        one $C$-dim vector per spatial cell ($C=512$).
+  \item \texttt{lang\_feat}: $(B, T, C)$ --- one feature vector per word, from a
+        BiLSTM over GloVe embeddings.
+  \item Output 1, \texttt{lang\_feat\_attn}: $(B, C, H, W)$ --- for every region,
+        ``what does the text say about this region,'' same shape as
+        \texttt{image\_feat} so it can be concatenated back with it.
+  \item Output 2, \texttt{beta}: $(B, H, W)$ --- a heatmap in $[0,1]$, one scalar
+        per region, supervised directly by a BCE loss against the ground-truth box
+        mask (an auxiliary loss forcing the attention to light up on the right region).
+\end{itemize}
+
+\paragraph{The math.} Let $R = H \cdot W$ be the number of regions and $T$ the number
+of words. With $G \in \R^{R\times C}$ the flattened region features and
+$Q \in \R^{T \times C}$ the word features:
+\begin{align}
+  S &= G\,Q^{\top} && \in \R^{R \times T} \quad \text{(raw region--word dot products)}\\
+  A &= \operatorname{softmax}_{T}(S) && \in \R^{R \times T} \quad \text{(normalize over words, per region)}\\
+  \text{lang\_feat\_attn} &= A\,Q && \in \R^{R \times C} \quad \text{(weighted average of word vectors)}\\
+  \beta &= \sigma\!\Big(\textstyle\sum_{t} S_{\cdot,t}\Big) && \in \R^{R} \quad \text{(``how strongly does this region match \emph{any} word'')}
+\end{align}
+
+This is standard \textbf{cross-attention}: every region asks ``which words describe
+me?'', gets a softmax distribution over the $T$ words, and takes a weighted average
+of their embeddings. It has \textbf{zero learned parameters} --- purely
+dot-product $\to$ softmax $\to$ sigmoid on features already produced upstream by the
+CNN and BiLSTM.
+
+\begin{keybox}[Why this is a weak spot]
+Softmax attention gives every region a smooth, \emph{convex combination} of word
+vectors. If the phrase is ``the car on the left'' and there are two cars in the
+scene, both car-regions score similarly against the word ``car'' --- softmax just
+averages; it has no mechanism to sharply separate ``this car'' from ``that car''
+beyond whatever the raw upstream features already encode. There is no notion of a
+persistent, content-addressable memory --- it is a single, one-shot, low-capacity
+read.
+\end{keybox}
+
+% =====================================================================
+\section{What BDH Is: Intuition, Then Math}
+
+BDH = ``Baby Dragon Hatchling'' (ground-truth code: \texttt{external/bdh/bdh.py};
+paper \texttt{papers/2509.26507v1.md}). Mechanically, forget the biological framing
+for defense purposes: it is a \textbf{linear-attention Transformer with an explicit
+outer-product associative memory}, built from three ideas.
+
+\subsection{Lift into a big, sparse, positive space}
+
+Instead of attending directly in the model's working dimension $d$ (e.g.\ 512), BDH
+first \textbf{lifts} every feature vector into a much higher dimension
+$n = \texttt{mult} \times d$ (we use $\texttt{mult}=4 \Rightarrow n=2048$) via a
+learned linear map $E \in \R^{d\times n}$, followed by ReLU:
+\begin{equation}
+  x_{\text{sparse}} = \operatorname{ReLU}(x\,E) \in \R^{n}, \qquad n \gg d .
+\end{equation}
+
+\begin{keybox}[Intuition]
+In a low dimension $d$, two similar-but-different concepts (car \#1, car \#2) sit
+close together and small distinguishing signals get lost. Projecting into a much
+higher dimension and clipping negatives with ReLU is exactly what sparse coding /
+kernel feature maps do: it is far easier to make two points \emph{linearly
+separable} and \emph{sparse} (few active neurons each) in a big space than a small
+one. Only a handful of the $n$ neurons fire for any given input, and different
+inputs tend to activate mostly non-overlapping subsets of neurons --- like a hash.
+(BDH's paper motivates this via a Hebbian/neuronal analogy --- ``neurons that fire
+together wire together'' --- but functionally it is a sparse, positive, overcomplete
+ReLU feature map, in the same family as ReLU kernel feature maps used in linear
+attention.)
+\end{keybox}
+
+\subsection{Attention becomes an explicit associative memory}
+
+Standard attention computes $\operatorname{softmax}(QK^{\top})V$: normalize scores
+over keys, then average values. That is a \emph{soft lookup table with no
+persistent state} --- every query re-derives its weights from scratch against all
+keys.
+
+BDH instead builds a memory matrix explicitly. With $K_{\text{sparse}}, Q_{\text{sparse}}
+\in \R^{\cdot \times n}$ the lifted keys/queries and $V \in \R^{\cdot \times d}$ the
+values:
+\begin{align}
+  \rho &= K_{\text{sparse}}^{\top} V && \in \R^{n \times d} \quad \text{(outer-product accumulation over \emph{all} keys/values)} \\
+  \text{read} &= Q_{\text{sparse}}\,\rho && \in \R^{\cdot \times d} \quad \text{(each query retrieves by dotting into that memory)}
+\end{align}
+
+This is \textbf{linear attention}: no softmax, just a weighted sum of outer products
+$\sum_i k_i \otimes v_i$, then each query multiplies against that sum. Algebraically
+it is equivalent to $Q_{\text{sparse}}K_{\text{sparse}}^{\top}V$ (re-associated for
+efficiency) --- i.e.\ ``unnormalized linear attention.'' What matters for the
+grounding use case is the \textbf{framing}: $\rho$ is a literal memory matrix that
+can be \emph{built once} (accumulate keys and values into it) and \emph{read many
+times} (any query dots into it) --- content-addressable storage, like a Hopfield
+network or a linear key--value store, rather than a fresh softmax computed per
+query.
+
+\begin{keybox}[Why this maps well onto grounding]
+In our use, the ``keys/values'' are the words of the command and the ``queries''
+are image regions. Building the memory once from all words, then letting every
+region address into it, is literally what a \emph{referring expression} should
+behave like: a small declarative store (``car'', ``left'', ``white'') that every
+candidate region queries against.
+\end{keybox}
+
+\subsection{A multiplicative gate, not a linear blend}
+
+After the memory read, BDH does not simply decode \texttt{read} back to $d$
+dimensions. It re-lifts the read result into the same sparse $n$-dim space and
+\textbf{multiplies it, element-wise}, against the original query's own sparse
+address:
+\begin{align}
+  \text{read}_{\text{sparse}} &= \operatorname{ReLU}(\text{read}\,E_v) && \in \R^{\cdot \times n} \\
+  \text{gated} &= Q_{\text{sparse}} \odot \text{read}_{\text{sparse}} && \in \R^{\cdot \times n} \quad \text{(elementwise product)} \\
+  \text{out} &= \text{gated}\,D && \in \R^{\cdot \times d} \quad \text{(decode)}
+\end{align}
+
+\begin{keybox}[Why multiplicative matters]
+A weighted \emph{sum} (softmax attention) can only ever interpolate between
+existing value vectors --- it is linear in the values. A gated \emph{product}
+between ``what I was looking for'' ($Q_{\text{sparse}}$) and ``what I found''
+($\text{read}_{\text{sparse}}$) creates a \textbf{bilinear} interaction: the output
+carries signal only where a neuron is active in \emph{both} the query's own
+representation and the retrieved memory. This is a sharper, AND-like combination
+(vs.\ softmax's OR-like/average combination) and is the mechanism most directly
+responsible for BDH's claimed ability to keep near-duplicate concepts (e.g.\ two
+same-class objects) separable rather than blurred together.
+\end{keybox}
+
+\paragraph{The whole engine, in one line:} \emph{lift $\to$ build memory
+(outer product) $\to$ read $\to$ gate multiplicatively $\to$ decode.} Every layer of
+the original BDH language model (\texttt{external/bdh/bdh.py}, class \texttt{BDH})
+repeats this, plus RoPE positional encoding and a causal mask (it is a next-token
+predictor). Our job was to strip the parts that only make sense for autoregressive
+text and repurpose the memory mechanism for \emph{cross-modal grounding}, which has
+no sequence order between ``regions'' and ``words'' at all.
+
+% =====================================================================
+\section{What We Built: \texttt{bdh\_grounding/bdh\_fusion.py}}
+
+We wrote \texttt{BDHVisualTextAttention}, a \textbf{drop-in replacement} for
+\texttt{text\_attn} --- identical inputs/outputs --- selected in
+\texttt{grounding\_model.py} via \texttt{variant == "bdh"}
+(\texttt{self.bdh\_attn = BDHVisualTextAttention(\ldots)}, one instance shared
+across AttnGrounder's 3 FPN scales).
+
+Three variants exist in code (the \texttt{mode} flag), but \textbf{only mode
+``C'' is validated and used for reported results} --- A and B are ablations kept
+for future comparison.
+
+\subsection{Mode C (primary, validated): symmetric, non-causal}
+
+This is the direct translation of Section~2 into cross-attention. Let
+$G \in \R^{R\times d}$ be the region features and $Q \in \R^{T\times d}$ the word
+features (both LayerNorm'd first):
+\begin{align}
+  G_q &= \operatorname{ReLU}(G\,E) && \in \R^{R \times n} \quad \text{region \emph{query} addresses} \\
+  K_k &= \operatorname{ReLU}(Q\,E) && \in \R^{T \times n} \quad \text{word \emph{key} addresses} \\
+  \rho &= K_k^{\top} Q && \in \R^{n \times d} \quad \text{memory, built once from \emph{all} $T$ words} \\
+  \text{read} &= (G_q\,\rho) \cdot \tfrac{1}{\sqrt n} && \in \R^{R \times d} \quad \text{each region reads} \\
+  \text{read}_{\text{sparse}} &= \operatorname{ReLU}\big(\operatorname{LN}(\text{read})\,E_v\big) \\
+  \text{gated} &= G_q \odot \text{read}_{\text{sparse}} && \in \R^{R \times n} \quad \text{multiplicative gate} \\
+  T' &= \operatorname{LN}(\text{gated}\,D) && \in \R^{R \times d} \;\to\; (B,C,H,W) \\
+  \beta &= \sigma\big(\operatorname{Linear}_{d\to1}(\text{read})\big) && \in \R^{R} \;\to\; (B,H,W)
+\end{align}
+
+\begin{lstlisting}[caption={Mode C forward pass (\texttt{bdh\_grounding/bdh\_fusion.py:\_forward\_C}), abbreviated}]
+Gq  = relu(G @ E)                 # (B, R, n) region query addresses
+Kk  = relu(Q @ E)                 # (B, T, n) word key addresses
+rho = Kk.transpose(1, 2) @ Q      # (B, n, d) associative memory, built from ALL words
+read = (Gq @ rho) * scale         # (B, R, d) each region reads from memory
+read_sparse = relu(ln(read) @ Ev)
+gated = Gq * read_sparse          # (B, R, n) multiplicative gate
+Tprime = ln(gated @ Dx)           # (B, R, d) -> reshaped to (B, C, H, W)
+beta = sigmoid(beta_head(read))   # learned scalar head -> (B, H, W)
+\end{lstlisting}
+
+\paragraph{Mapping onto Section 2/3.}
+\begin{itemize}[leftmargin=1.4em]
+  \item \textbf{Regions are queries, words are keys/values.} This is the
+        \emph{opposite} direction from BDH's original language-model use (where a
+        token queries \emph{past} tokens), but here there is no ``past'':
+        grounding is symmetric / non-causal, so we drop BDH's causal mask and RoPE
+        entirely --- word order within the sentence doesn't gate what a region is
+        allowed to attend to.
+  \item $\rho = K^{\top}Q$ is built \textbf{once per forward pass} from all $T$
+        words --- literally ``memorize the whole command'' --- then every one of
+        the $R = H{\times}W$ regions reads from that \emph{same} memory
+        independently. This replaces the baseline's per-region softmax-over-words
+        with per-region dot-product-into-memory.
+  \item The gate $G_q \odot \text{read}_{\text{sparse}}$ is the bilinear AND from
+        Section~2.3: a region's own sparse signature must overlap with what its
+        memory read up in order to produce a large output, rather than the
+        baseline's linear softmax average.
+\end{itemize}
+
+\begin{qabox}[Why did \texorpdfstring{$\beta$}{beta} need a learned head?]
+Unlike the baseline's parameter-free $\sigma(\sum S)$, mode C uses
+\texttt{sigmoid(Linear($d\to1$)(read))}. BDH's ReLU-sparse dot products
+($G_q$, $K_k$) are all $\geq 0$ by construction, so a raw sum of them can never dip
+meaningfully below the sigmoid's midpoint. The auxiliary BCE mask loss needs
+$\beta \to 0$ on background regions --- unreachable without a learned bias/weight to
+shift it. This is a $\sim(d{+}1)$-parameter head, negligible in size but necessary:
+BDH is \emph{not} fully parameter-free here, by design, for exactly this reason.
+\end{qabox}
+
+\subsection{Fusion trim (parameter budget)}
+
+Baseline AttnGrounder concatenates three streams before its output convolution:
+$[\,\text{visual},\ \text{lang\_feat\_attn},\ \beta \odot \text{visual}\,]$, i.e.\
+$\texttt{embin\_size} = \texttt{emb\_size} \times 3$. For the BDH variant we fuse
+only $[\,\text{visual},\ \text{lang\_feat\_attn}\,]$ (drop the $\beta\odot$visual
+product stream): $\texttt{embin\_size} = \texttt{emb\_size} \times 2$. This is a
+parameter-budget decision: it guarantees the BDH-variant model's total parameter
+count does not exceed the 75.84M baseline, so any accuracy difference is not
+confounded by ``we just gave the model more capacity.'' $\texttt{mult}=2$ is the
+default operating point, balancing BDH's need for $n \gg d$ (expansion gives sparse
+separability, but costs $n{\times}d$ params per matrix) against that budget.
+
+\subsection{Modes A and B: implemented ablations}
+
+\begin{description}[leftmargin=1.6em, style=nextline]
+  \item[Mode A] Text is first passed through a \emph{causal} BDH self-attention
+    pass over itself (words attend only to earlier words), producing a
+    contextualized memory, and \emph{then} regions query that. Tests whether
+    giving the text module its own BDH ``understanding pass'' before grounding
+    helps --- an in-context-retrieval framing closer to BDH's original LM use.
+  \item[Mode B] The most literal port of the original \texttt{bdh.py} forward
+    pass: concatenate $[\text{words} \,;\, \text{regions}]$ into \emph{one}
+    sequence, run genuine causal BDH self-attention (with RoPE) over the whole
+    thing, then read out only the region positions at the end --- ``vanilla BDH''
+    with regions appended as extra, causally-later tokens.
+\end{description}
+
+Mode C was chosen as primary because grounding has no real notion of sequence
+order between ``words'' and ``regions'': forcing a causal mask (A, B) throws away
+information for no modeling reason, whereas C's symmetric non-causal memory
+matches the task structure directly.
+
+\subsection{Cross-scale memory (``growing'' prior)}
+
+AttnGrounder runs \texttt{text\_attn} \textbf{independently at 3 FPN scales}
+(different $H\times W$ resolutions). We added an optional \texttt{region\_prior}
+argument: each scale's own \texttt{lang\_feat\_attn} output can be fed forward
+(upsampled + added as a residual) into the next, finer scale's region features
+before that scale builds its own memory --- the ``growing memory across scales''
+idea, orthogonal to the A/B/C mode choice. Off by default
+(\texttt{region\_prior=None} reproduces the original per-scale-independent
+behavior exactly), toggled via \texttt{bdh\_growing\_scales}.
+
+% =====================================================================
+\section{Side-by-Side: What Actually Changed, Mathematically}
+
+\begin{center}
+\renewcommand{\arraystretch}{1.35}
+\begin{tabular}{p{2.6cm}p{5.5cm}p{6.3cm}}
+\toprule
+ & \textbf{Baseline (softmax cross-attn)} & \textbf{BDH (mode C)} \\
+\midrule
+Score function & $QK^{\top}$ (dot product in raw $d$-dim space) & $Q_{\text{sparse}}(K_{\text{sparse}}^{\top}V)$ --- score pre-aggregated into a memory matrix \\
+Normalization & softmax over words (sums to 1) & none --- unnormalized linear attention, scaled by $1/\sqrt n$ \\
+Combine rule & weighted \textbf{sum} of value vectors (linear, convex) & \textbf{outer-product memory read}, then elementwise-\textbf{multiplied} with the query's own sparse code (bilinear) \\
+Feature space & raw $d$-dim (e.g.\ 512) & lifted $n$-dim sparse ReLU space ($n = \texttt{mult}\cdot d$, e.g.\ 2048), $n \gg d$ \\
+Params & 0 & $E, E_v, D$ ($\approx 3nd$) $+$ tiny $\beta$ head \\
+Complexity & $O(R\,T\,d)$ & $O(Rn) + O(Tn) + O(nd)$ --- memory $\rho$ built once, reused by every region \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{keybox}[The one sentence version]
+Softmax attention computes a fresh weighted average per region; BDH compiles the
+entire command into one small memory matrix once, then lets every region address
+into it through a sparse, multiplicative (AND-like) readout instead of a smooth
+average.
+\end{keybox}
+
+% =====================================================================
+\section{The Hypothesis: Why This Should Help Ambiguous Scenes}
+
+This is the hypothesis actually being tested. Same-class ambiguity (two cars in
+frame, command says ``the car on the left'') is exactly where \textbf{softmax
+averaging degrades}: if both car-regions score similarly against the word
+``car'', softmax spreads a similar-shaped distribution across both, and the linear
+weighted-sum blends their word evidence almost identically.
+
+BDH's sparse lift makes it more likely that subtly different regional features
+(car-on-left vs.\ car-on-right, differing e.g.\ in local context) activate
+\textbf{different subsets} of the $n$ sparse neurons, and the multiplicative gate
+then produces sharply different outputs for regions whose sparse codes do not
+overlap the retrieved memory the same way --- i.e.\ BDH has structurally more room
+to \emph{disambiguate} than a low-dimensional softmax does.
+
+This is why evaluation is \textbf{stratified}: \texttt{analysis/stratified\_eval.py}
+splits AP50 into ``ambiguous'' ($\geq 1$ other same-class object in the scene, from
+nuScenes metadata) vs.\ ``unambiguous,'' specifically to check whether any BDH gain
+\emph{concentrates} where the hypothesis predicts it should, rather than being a
+uniform, unexplained bump.
+
+% =====================================================================
+\section{Anticipated Questions}
+
+\begin{qabox}[Is this the actual BDH paper's architecture?]
+No --- it is BDH's \emph{core mechanism} (sparse lift + outer-product memory +
+multiplicative gate) repurposed as a cross-attention module. We dropped what only
+applies to autoregressive language modeling: the causal mask, RoPE positional
+encoding, and the token embedding / LM head. Mode B is the closest to ``literal
+BDH''; mode C is the adapted version and the one we report.
+\end{qabox}
+
+\begin{qabox}[Isn't \texorpdfstring{$\rho = K^{\top}Q$}{rho = KTQ} just a matmul reordering trick?]
+Algebraically $Q(K^{\top}V) = (QK^{\top})V$, so yes --- it is the identity linear
+attention always uses. The ``memory'' framing matters because $\rho$ is a fixed
+$(n,d)$ object built \emph{once} per forward pass and reused by every one of the
+$R$ region queries --- it does not recompute anything per-region, unlike softmax's
+$QK^{\top}$, which is inherently a full $R \times T$ pairwise matrix. It is a
+legitimate architectural distinction (persistent, content-addressable state vs.\
+per-query recomputation), not just terminology.
+\end{qabox}
+
+\begin{qabox}[What's the parameter budget vs.\ the baseline?]
+Kept $\leq 75.84$M via the fusion trim (Section 3.2); \texttt{mult} and
+\texttt{share\_qv\_encoder} are the knobs that trade memory capacity ($n$) against
+parameter count. \texttt{share\_qv\_encoder=true} ties the query-address and
+value-path encoders ($E = E_v$), reclaiming $n \times d$ parameters.
+\end{qabox}
+
+\begin{qabox}[Did you validate modes A and B too?]
+Implemented, not the headline result --- kept as future ablation work; only mode
+C has been trained and evaluated end-to-end.
+\end{qabox}
+
+\begin{qabox}[What about TransVG?]
+A second, independent integration
+(\texttt{bdh\_grounding/bdh\_selfattn.py}) swaps BDH's mechanism into TransVG's
+transformer \emph{self}-attention (not cross-attention) --- same
+lift$\to$memory$\to$gate recipe, but built signature-compatible with
+\texttt{nn.MultiheadAttention} so it drops straight into TransVG's encoder layers,
+with padded tokens masked out of the memory ($\rho$) so they never contribute.
+This was the cross-architecture validation experiment: does the effect show up in
+a second, unrelated grounding architecture, not just AttnGrounder.
+\end{qabox}
+
+% =====================================================================
+\section{Summary Statement}
+
+\begin{keybox}
+``AttnGrounder originally grounds a phrase by having every image region do a
+softmax-weighted average over the command's word vectors --- a smooth,
+parameter-free lookup. We replaced that one module with BDH's mechanism: lift both
+regions and words into a much higher-dimensional sparse space, build one explicit
+associative-memory matrix from all the words via an outer product, let every
+region read from that same memory, then combine the region's own sparse code with
+what it retrieved \emph{multiplicatively} rather than by averaging. It's
+mathematically linear attention with a sparse ReLU feature map and a bilinear gate
+instead of softmax's convex combination, and the hypothesis is that this sharper,
+AND-like combination rule should specifically help disambiguate scenes with
+multiple same-class objects --- which is why we stratify evaluation by scene
+ambiguity rather than just reporting one aggregate AP50.''
+\end{keybox}
+
+\vspace{1em}
+\noindent\textbf{Where to look yourself, to re-derive any line:}
+\begin{itemize}[leftmargin=1.4em, itemsep=2pt]
+  \item Baseline attention: \texttt{external/AttnGrounder/model/grounding\_model.py:199}
+  \item BDH ground truth: \texttt{external/bdh/bdh.py} (class \texttt{BDH}, \texttt{forward})
+  \item AttnGrounder integration: \texttt{bdh\_grounding/bdh\_fusion.py} (\texttt{\_forward\_C} is the one that matters)
+  \item TransVG integration: \texttt{bdh\_grounding/bdh\_selfattn.py}
+  \item Design rationale: project memory notes on the locked module design and evaluation plan
+\end{itemize}
+
+\end{document}
