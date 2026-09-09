@@ -1,0 +1,13 @@
+\beamer@sectionintoc {1}{Task \& Motivation}{3}{0}{1}
+\beamer@sectionintoc {2}{Related Work}{5}{0}{2}
+\beamer@sectionintoc {3}{Method}{7}{0}{3}
+\beamer@sectionintoc {4}{How We Measure Success}{10}{0}{4}
+\beamer@sectionintoc {5}{Results}{12}{0}{5}
+\beamer@sectionintoc {6}{Where We Stand vs.\ Prior Work}{15}{0}{6}
+\beamer@sectionintoc {7}{Positioning Relative to Prior Work}{16}{0}{7}
+\beamer@sectionintoc {8}{Methodology}{17}{0}{8}
+\beamer@sectionintoc {9}{Examining the Motivating Hypothesis}{18}{0}{9}
+\beamer@sectionintoc {10}{Additional Experiments}{20}{0}{10}
+\beamer@sectionintoc {11}{Cross-Architecture Check}{21}{0}{11}
+\beamer@sectionintoc {12}{Future Work}{22}{0}{12}
+\beamer@sectionintoc {13}{Conclusion}{23}{0}{13}
