@@ -1,6 +1,6 @@
-# Talk2Car-BDH
+# HATCH: Hebbian Associative-memory Test for Cross-modal grounding
 
-**Does the Dragon Hatchling (BDH) — a brain-inspired associative-memory architecture published in 2025 — work as a drop-in replacement for softmax attention on a real visual grounding benchmark?**
+**Does the Dragon Hatchling (BDH) — a brain-inspired associative-memory architecture published in 2025 — hatch into a usable drop-in replacement for softmax attention on a real visual grounding benchmark?**
 
 This repo swaps BDH's explicit, growing outer-product memory (`ρ = Kᵀ@V`) into two visual grounding architectures — [AttnGrounder](external/AttnGrounder) (CNN + cross-attention) and [TransVG](external/TransVG) (transformer self-attention) — and evaluates both against their original softmax-attention baselines on [Talk2Car](https://talk2car.github.io/), a natural-language object-grounding dataset for autonomous driving commands.
 
